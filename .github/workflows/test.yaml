@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -24,7 +24,8 @@ jobs:
         run: |
           pip install -r services/yolo/torch-requirements.txt
           pip install -r services/yolo/requirements.txt
-          
+
       - name: Run tests
         run: pytest tests/
         working-directory: services/yolo
+      
