@@ -8,7 +8,7 @@ import logging
 import os
 import uuid
 import shutil
-
+import time
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # Disable GPU usage
@@ -92,11 +92,11 @@ def save_detection_object(prediction_uid, label, score, box):
             VALUES (?, ?, ?, ?)
         """, (prediction_uid, label, score, str(box)))
 
+
 @app.post("/predict")
 def predict(file: UploadFile = File(...)):
-    """
-    Predict objects in an image
-    """
+    start_time = time.time()
+
     ext = os.path.splitext(file.filename)[1]
     uid = str(uuid.uuid4())
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
@@ -105,14 +105,14 @@ def predict(file: UploadFile = File(...)):
     with open(original_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    results = model(original_path, device="cpu", conf=CONFIDENCE_THRESHOLD)
+    results = model(original_path, device="cpu")
 
-    annotated_frame = results[0].plot()  # NumPy image with boxes
+    annotated_frame = results[0].plot()
     annotated_image = Image.fromarray(annotated_frame)
     annotated_image.save(predicted_path)
 
     save_prediction_session(uid, original_path, predicted_path)
-    
+
     detected_labels = []
     for box in results[0].boxes:
         label_idx = int(box.cls[0].item())
@@ -122,10 +122,13 @@ def predict(file: UploadFile = File(...)):
         save_detection_object(uid, label, score, bbox)
         detected_labels.append(label)
 
+    processing_time = round(time.time() - start_time, 2)
+
     return {
-        "prediction_uid": uid, 
+        "prediction_uid": uid,
         "detection_count": len(results[0].boxes),
-        "labels": detected_labels
+        "labels": detected_labels,
+        "time_took": processing_time
     }
 
 @app.get("/prediction/{uid}")
