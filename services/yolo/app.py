@@ -176,7 +176,103 @@ def get_prediction_image(uid: str):
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(row[0])
 
+@app.get("/predictions/label/")
+def get_predictions_by_empty_label():
+    """
+    Return 400 when label is empty
+    """
+    raise HTTPException(status_code=400, detail="Label cannot be empty")
 
+
+@app.get("/predictions/label/{label}")
+def get_predictions_by_label(label: str):
+    """
+    Return all prediction sessions that contain at least one detected object
+    with the given label
+    """
+    if label.strip() == "":
+        raise HTTPException(status_code=400, detail="Label cannot be empty")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            """
+            SELECT
+                prediction_sessions.uid,
+                prediction_sessions.timestamp,
+                detection_objects.id,
+                detection_objects.label,
+                detection_objects.score,
+                detection_objects.box
+            FROM prediction_sessions
+            JOIN detection_objects
+                ON prediction_sessions.uid = detection_objects.prediction_uid
+            WHERE detection_objects.label = ?
+            ORDER BY prediction_sessions.timestamp, detection_objects.id
+            """,
+            (label,),
+        ).fetchall()
+
+    sessions = {}
+
+    for row in rows:
+        uid = row["uid"]
+
+        if uid not in sessions:
+            sessions[uid] = {
+                "uid": row["uid"],
+                "timestamp": row["timestamp"],
+                "detection_objects": [],
+            }
+
+        sessions[uid]["detection_objects"].append(
+            {
+                "id": row["id"],
+                "label": row["label"],
+                "score": row["score"],
+                "box": row["box"],
+            }
+        )
+
+    return list(sessions.values())
+
+
+@app.get("/predictions/score/{min_score}")
+def get_predictions_by_score(min_score: float):
+    """
+    Return all detection objects with confidence score greater than
+    or equal to min_score
+    """
+    if min_score < 0.0 or min_score > 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail="min_score must be between 0.0 and 1.0",
+        )
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        objects = conn.execute(
+            """
+            SELECT id, prediction_uid, label, score, box
+            FROM detection_objects
+            WHERE score >= ?
+            ORDER BY id
+            """,
+            (min_score,),
+        ).fetchall()
+
+    return [
+        {
+            "id": obj["id"],
+            "prediction_uid": obj["prediction_uid"],
+            "label": obj["label"],
+            "score": obj["score"],
+            "box": obj["box"],
+        }
+        for obj in objects
+    ]
 @app.get("/health")
 def health():
     """
