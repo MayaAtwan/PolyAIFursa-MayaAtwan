@@ -162,6 +162,7 @@ def get_prediction_by_uid(uid: str):
         }
 
 
+
 @app.get("/prediction/{uid}/image")
 def get_prediction_image(uid: str):
     """
