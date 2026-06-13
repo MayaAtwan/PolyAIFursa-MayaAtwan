@@ -27,7 +27,7 @@ _raw_threshold = os.environ.get("CONFIDENCE_THRESHOLD")
 if _raw_threshold is not None:
     CONFIDENCE_THRESHOLD = float(_raw_threshold)
     logging.info(f"CONFIDENCE_THRESHOLD set to {CONFIDENCE_THRESHOLD} (from environment)")
-else:
+else:  # pragma: no cover
     CONFIDENCE_THRESHOLD = 0.5
     logging.info(f"CONFIDENCE_THRESHOLD not set, using default: {CONFIDENCE_THRESHOLD}")
 
@@ -97,26 +97,35 @@ def predict(file: UploadFile = File(...)):
     """
     Predict objects in an image
     """
+    # Validate file type
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only image files are supported")
+    
+    # Generate a unique ID for this prediction session and save the original and predicted images
     uid = str(uuid.uuid4())
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
     predicted_path = os.path.join(PREDICTED_DIR, uid + ext)
 
+    # Save the uploaded file to disk, wb mode to handle binary data correctly
+    # wb means "write binary" and is necessary for saving image files without corruption
     with open(original_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        shutil.copyfileobj(file.file, f) #shutil means to copy file-like objects efficiently without loading the entire file into memory
 
+    # Run the YOLO model on the saved image with the specified confidence threshold
     results = model(original_path, device="cpu", conf=CONFIDENCE_THRESHOLD)
 
+    # Save the annotated image with bounding boxes drawn on it
     annotated_frame = results[0].plot()  # NumPy image with boxes
     annotated_image = Image.fromarray(annotated_frame)
     annotated_image.save(predicted_path)
 
+    # Save the prediction session to the database
     save_prediction_session(uid, original_path, predicted_path)
     
+    # Save each detected object to the database and collect labels for the response
     detected_labels = []
     for box in results[0].boxes:
         label_idx = int(box.cls[0].item())
@@ -248,7 +257,7 @@ def get_predictions_by_score(min_score: float):
     Return all detection objects with confidence score greater than
     or equal to min_score
     """
-    if min_score < 0.0 or min_score > 1.0:
+    if not 0.0 <= min_score <= 1.0:
         raise HTTPException(
             status_code=400,
             detail="min_score must be between 0.0 and 1.0",
@@ -284,9 +293,9 @@ def health():
     """
     return {"status": "ok"}
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     init_db()
-    
+
     uvicorn.run(app, host="0.0.0.0", port=8080)
