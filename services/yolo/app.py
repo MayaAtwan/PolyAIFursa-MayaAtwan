@@ -9,6 +9,7 @@ import os
 import uuid
 import shutil
 import time
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # Disable GPU usage
@@ -105,6 +106,8 @@ def predict(file: UploadFile = File(...)):
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only image files are supported")
     
+    start_time = time.time()
+
     # Generate a unique ID for this prediction session and save the original and predicted images
     uid = str(uuid.uuid4())
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
