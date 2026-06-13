@@ -97,7 +97,11 @@ def predict(file: UploadFile = File(...)):
     """
     Predict objects in an image
     """
-    ext = os.path.splitext(file.filename)[1]
+    ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Only image files are supported")
     uid = str(uuid.uuid4())
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
     predicted_path = os.path.join(PREDICTED_DIR, uid + ext)
