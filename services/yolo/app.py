@@ -8,7 +8,7 @@ import logging
 import os
 import uuid
 import shutil
-
+import time
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # Disable GPU usage
@@ -92,6 +92,7 @@ def save_detection_object(prediction_uid, label, score, box):
             VALUES (?, ?, ?, ?)
         """, (prediction_uid, label, score, str(box)))
 
+
 @app.post("/predict")
 def predict(file: UploadFile = File(...)):
     """
@@ -135,10 +136,13 @@ def predict(file: UploadFile = File(...)):
         save_detection_object(uid, label, score, bbox)
         detected_labels.append(label)
 
+    processing_time = round(time.time() - start_time, 2)
+
     return {
-        "prediction_uid": uid, 
+        "prediction_uid": uid,
         "detection_count": len(results[0].boxes),
-        "labels": detected_labels
+        "labels": detected_labels,
+        "time_took": processing_time
     }
 
 @app.get("/prediction/{uid}")
