@@ -32,4 +32,3 @@ jobs:
           file: services/yolo/coverage.xml
           fail_ci_if_error: true
 
-
