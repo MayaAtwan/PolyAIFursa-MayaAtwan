@@ -9,6 +9,7 @@ import os
 import uuid
 import shutil
 import time
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 # Disable GPU usage
@@ -27,7 +28,7 @@ _raw_threshold = os.environ.get("CONFIDENCE_THRESHOLD")
 if _raw_threshold is not None:
     CONFIDENCE_THRESHOLD = float(_raw_threshold)
     logging.info(f"CONFIDENCE_THRESHOLD set to {CONFIDENCE_THRESHOLD} (from environment)")
-else:
+else:  # pragma: no cover
     CONFIDENCE_THRESHOLD = 0.5
     logging.info(f"CONFIDENCE_THRESHOLD not set, using default: {CONFIDENCE_THRESHOLD}")
 
@@ -95,24 +96,40 @@ def save_detection_object(prediction_uid, label, score, box):
 
 @app.post("/predict")
 def predict(file: UploadFile = File(...)):
+    """
+    Predict objects in an image
+    """
+    # Validate file type
+    ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+    
     start_time = time.time()
 
-    ext = os.path.splitext(file.filename)[1]
+    # Generate a unique ID for this prediction session and save the original and predicted images
     uid = str(uuid.uuid4())
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
     predicted_path = os.path.join(PREDICTED_DIR, uid + ext)
 
+    # Save the uploaded file to disk, wb mode to handle binary data correctly
+    # wb means "write binary" and is necessary for saving image files without corruption
     with open(original_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        shutil.copyfileobj(file.file, f) #shutil means to copy file-like objects efficiently without loading the entire file into memory
 
-    results = model(original_path, device="cpu")
+    # Run the YOLO model on the saved image with the specified confidence threshold
+    results = model(original_path, device="cpu", conf=CONFIDENCE_THRESHOLD)
 
-    annotated_frame = results[0].plot()
+    # Save the annotated image with bounding boxes drawn on it
+    annotated_frame = results[0].plot()  # NumPy image with boxes
     annotated_image = Image.fromarray(annotated_frame)
     annotated_image.save(predicted_path)
 
+    # Save the prediction session to the database
     save_prediction_session(uid, original_path, predicted_path)
-
+    
+    # Save each detected object to the database and collect labels for the response
     detected_labels = []
     for box in results[0].boxes:
         label_idx = int(box.cls[0].item())
@@ -165,6 +182,7 @@ def get_prediction_by_uid(uid: str):
         }
 
 
+
 @app.get("/prediction/{uid}/image")
 def get_prediction_image(uid: str):
     """
@@ -178,7 +196,103 @@ def get_prediction_image(uid: str):
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(row[0])
 
+@app.get("/predictions/label/")
+def get_predictions_by_empty_label():
+    """
+    Return 400 when label is empty
+    """
+    raise HTTPException(status_code=400, detail="Label cannot be empty")
 
+
+@app.get("/predictions/label/{label}")
+def get_predictions_by_label(label: str):
+    """
+    Return all prediction sessions that contain at least one detected object
+    with the given label
+    """
+    if label.strip() == "":
+        raise HTTPException(status_code=400, detail="Label cannot be empty")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        rows = conn.execute(
+            """
+            SELECT
+                prediction_sessions.uid,
+                prediction_sessions.timestamp,
+                detection_objects.id,
+                detection_objects.label,
+                detection_objects.score,
+                detection_objects.box
+            FROM prediction_sessions
+            JOIN detection_objects
+                ON prediction_sessions.uid = detection_objects.prediction_uid
+            WHERE detection_objects.label = ?
+            ORDER BY prediction_sessions.timestamp, detection_objects.id
+            """,
+            (label,),
+        ).fetchall()
+
+    sessions = {}
+
+    for row in rows:
+        uid = row["uid"]
+
+        if uid not in sessions:
+            sessions[uid] = {
+                "uid": row["uid"],
+                "timestamp": row["timestamp"],
+                "detection_objects": [],
+            }
+
+        sessions[uid]["detection_objects"].append(
+            {
+                "id": row["id"],
+                "label": row["label"],
+                "score": row["score"],
+                "box": row["box"],
+            }
+        )
+
+    return list(sessions.values())
+
+
+@app.get("/predictions/score/{min_score}")
+def get_predictions_by_score(min_score: float):
+    """
+    Return all detection objects with confidence score greater than
+    or equal to min_score
+    """
+    if not 0.0 <= min_score <= 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail="min_score must be between 0.0 and 1.0",
+        )
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        objects = conn.execute(
+            """
+            SELECT id, prediction_uid, label, score, box
+            FROM detection_objects
+            WHERE score >= ?
+            ORDER BY id
+            """,
+            (min_score,),
+        ).fetchall()
+
+    return [
+        {
+            "id": obj["id"],
+            "prediction_uid": obj["prediction_uid"],
+            "label": obj["label"],
+            "score": obj["score"],
+            "box": obj["box"],
+        }
+        for obj in objects
+    ]
 @app.get("/health")
 def health():
     """
@@ -186,9 +300,9 @@ def health():
     """
     return {"status": "ok"}
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
     init_db()
-    
+
     uvicorn.run(app, host="0.0.0.0", port=8080)
