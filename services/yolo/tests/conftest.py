@@ -1,9 +1,13 @@
-import io
+# pytest has a special rule : any file named conftest.py is automatically imported by pytest loaded before any test runs.
+
+import io # this is used to create an in memory and not on disk file object for testing image uploads
 import os
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
+# without running a live server, we can use the TestClient to make requests to the API endpoints and test their behavior
+from fastapi.testclient import TestClient # this is used to create a test client for the fastapi application, allowing us to make requests to the API endpoints without running a live server
+
 from PIL import Image
 
 os.environ.setdefault("CONFIDENCE_THRESHOLD", "0.5")
@@ -43,7 +47,7 @@ class FakeResult:
 
 class FakeModel:
     names = {0: "person"}
-
+    # call method allows an instance of the class to be called as a function, so when we call the fake model with an image path, it returns a list containing a single FakeResult object, which simulates the output of a real YOLO model without performing any actual inference or downloading weights. 
     def __call__(self, path, device="cpu", conf=0.5):
         return [FakeResult()]
 
@@ -100,6 +104,8 @@ def seeded_db():
     save_detection_object("def-456", "dog", 0.49, [5, 6, 7, 8])
 
 
+#Creates an in-memory buffer — think of it as a fake file that lives in RAM instead of on your hard drive. 
+# It behaves exactly like a real file (you can read and write to it), but nothing touches the disk.
 def make_jpeg_bytes():
     """Return a minimal in-memory JPEG for upload tests."""
     buf = io.BytesIO()
