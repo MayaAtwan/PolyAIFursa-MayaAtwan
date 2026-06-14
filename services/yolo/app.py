@@ -73,6 +73,7 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_score ON detection_objects (score)")
 
 
+# helper functopn to insert prediction session into the database, we use this function to save the original and predicted image paths for each prediction session, along with a unique identifier (uid) that can be used to retrieve the session later. The function takes three parameters: uid (a unique identifier for the prediction session), original_image (the file path of the original uploaded image), and predicted_image (the file path of the annotated image with detected objects). It establishes a connection to the SQLite database, executes an INSERT statement to add a new record to the prediction_sessions table, and then closes the connection automatically when done.
 def save_prediction_session(uid, original_image, predicted_image):
     """
     Save prediction session to database
@@ -82,7 +83,7 @@ def save_prediction_session(uid, original_image, predicted_image):
             INSERT INTO prediction_sessions (uid, original_image, predicted_image)
             VALUES (?, ?, ?)
         """, (uid, original_image, predicted_image))
-
+# helper function to insert detected objects into the database, we use this function to save the details of each detected object for a given prediction session. The function takes four parameters: prediction_uid (the unique identifier of the prediction session that this object belongs to), label (the class label of the detected object), score (the confidence score of the detection), and box (the bounding box coordinates of the detected object). It establishes a connection to the SQLite database, executes an INSERT statement to add a new record to the detection_objects table with the provided details, and then closes the connection automatically when done.
 def save_detection_object(prediction_uid, label, score, box):
     """
     Save detection object to database
@@ -196,6 +197,8 @@ def get_prediction_image(uid: str):
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(row[0])
 
+# when getting get request with empty label we return 400 error
+# this is necessary beacuse this endpoint doesnt match the endpoint with label parameter, so we need to handle it separately
 @app.get("/predictions/label/")
 def get_predictions_by_empty_label():
     """
@@ -204,19 +207,22 @@ def get_predictions_by_empty_label():
     raise HTTPException(status_code=400, detail="Label cannot be empty")
 
 
+
 @app.get("/predictions/label/{label}")
 def get_predictions_by_label(label: str):
     """
     Return all prediction sessions that contain at least one detected object
     with the given label
     """
-    if label.strip() == "":
+    if label.strip() == "": # if the label is empty or only contains whitespace, we raise a 400 error to indicate that the label cannot be empty
         raise HTTPException(status_code=400, detail="Label cannot be empty")
 
+    # Query the database for prediction sessions and their detected objects with the given label
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = sqlite3.Row # this allows us to access columns by name instead of index, making the code more readable and less error-prone when fetching data from the database
 
-        rows = conn.execute(
+        # run the SQL query to select all prediction sessions and their detected objects that have the given label. We join the prediction_sessions table with the detection_objects table on the prediction_uid, and filter by the label. The results are ordered by timestamp and object id for consistent output.
+        rows = conn.execute( 
             """
             SELECT
                 prediction_sessions.uid,
@@ -238,14 +244,14 @@ def get_predictions_by_label(label: str):
 
     for row in rows:
         uid = row["uid"]
-
+        # if we haven't seen this uid before, we create a new entry in the sessions dictionary with the uid, timestamp, and an empty list for detection_objects. If we have seen this uid before, we simply append the current detected object to the existing list of detection_objects for that session. This way, we group all detected objects by their prediction session (uid) and return a structured response that includes the session details along with all relevant detected objects.
         if uid not in sessions:
             sessions[uid] = {
                 "uid": row["uid"],
                 "timestamp": row["timestamp"],
                 "detection_objects": [],
             }
-
+        # we append the current detected object (with its id, label, score, and box) to the list of detection_objects for the corresponding session (uid) in the sessions dictionary. This allows us to group all detected objects by their prediction session and return a structured response that includes the session details along with all relevant detected objects.
         sessions[uid]["detection_objects"].append(
             {
                 "id": row["id"],
@@ -258,8 +264,9 @@ def get_predictions_by_label(label: str):
     return list(sessions.values())
 
 
-@app.get("/predictions/score/{min_score}")
-def get_predictions_by_score(min_score: float):
+# when getting get request we run this function and we return all the objects that have a score greater than or equal to the min_score
+@app.get("/predictions/score/{min_score}") # we use the url path
+def get_predictions_by_score(min_score: float): #  if the user sends string instead of float it will return 422 Unprocessable Entity error because FastAPI will try to convert the path parameter to float and fail if it's not a valid float
     """
     Return all detection objects with confidence score greater than
     or equal to min_score
@@ -271,7 +278,7 @@ def get_predictions_by_score(min_score: float):
         )
 
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = sqlite3.Row # this allows us to access columns by name instead of index, making the code more readable and less error-prone when fetching data from the database
 
         objects = conn.execute(
             """
@@ -281,10 +288,10 @@ def get_predictions_by_score(min_score: float):
             ORDER BY id
             """,
             (min_score,),
-        ).fetchall()
+        ).fetchall() # we execute the SQL query to select all detection objects with a score greater than or equal to min_score, and we order the results by id for consistent output. The results are fetched as a list of rows
 
     return [
-        {
+        { # we return a list of dictionaries, where each dictionary represents a detection object with its id, prediction_uid, label, score, and box coordinates
             "id": obj["id"],
             "prediction_uid": obj["prediction_uid"],
             "label": obj["label"],
@@ -293,6 +300,8 @@ def get_predictions_by_score(min_score: float):
         }
         for obj in objects
     ]
+
+# health endpoint checks if the service is running and returns a simple JSON response with status "ok" 200.
 @app.get("/health")
 def health():
     """
@@ -301,6 +310,7 @@ def health():
     return {"status": "ok"}
 
 if __name__ == "__main__":  # pragma: no cover
+    #  uvicorn is a server for runing fastapi applications.
     import uvicorn
 
     init_db()

@@ -13,6 +13,7 @@
 
 
 def test_get_predictions_by_score_returns_objects_above_or_equal_score(client, seeded_db):
+    #arrange --> act--> assert
     response = client.get("/predictions/score/0.5")
 
     assert response.status_code == 200

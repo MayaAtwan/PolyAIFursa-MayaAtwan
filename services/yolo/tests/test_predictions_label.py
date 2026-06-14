@@ -15,6 +15,7 @@
 
 
 def test_get_predictions_by_label_returns_matching_sessions(client, seeded_db):
+    #arrange --> act--> assert
     response = client.get("/predictions/label/person")
 
     assert response.status_code == 200
