@@ -27,6 +27,7 @@ __pycache__
 *.coverage
 .coverage.*
 coverage.xml
+services/yolo/coverage.xml
 .cache
 .tox/
 dist/
@@ -46,4 +47,5 @@ Thumbs.db
 services/frontend/.next/
 services/frontend/node_modules/
 services/frontend/out/
+
 
