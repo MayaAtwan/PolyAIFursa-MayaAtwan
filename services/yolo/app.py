@@ -9,6 +9,8 @@ import os
 import uuid
 import shutil
 import time
+import signal
+import sys
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -310,8 +312,13 @@ def health():
     return {"status": "ok"}
 
 if __name__ == "__main__":  # pragma: no cover
-    #  uvicorn is a server for runing fastapi applications.
     import uvicorn
+
+    def handle_sigterm(signum, frame):
+        logging.info("Yolo service received SIGTERM. Shutting down gracefully...")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
 
     init_db()
 
