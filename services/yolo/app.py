@@ -303,6 +303,8 @@ def get_predictions_by_score(min_score: float): #  if the user sends string inst
         for obj in objects
     ]
 
+is_shutting_down = False
+
 # health endpoint checks if the service is running and returns a simple JSON response with status "ok" 200.
 @app.get("/health")
 def health():
@@ -311,11 +313,21 @@ def health():
     """
     return {"status": "ok"}
 
+@app.get("/ready")
+def ready():
+    if is_shutting_down:
+        raise HTTPException(status_code=503, detail="Service is shutting down")
+    return {"status": "ready"}
+
 if __name__ == "__main__":  # pragma: no cover
+    #  uvicorn is a server for runing fastapi applications.
     import uvicorn
 
     def handle_sigterm(signum, frame):
-        logging.info("Yolo service received SIGTERM. Shutting down gracefully...")
+        global is_shutting_down
+        is_shutting_down = True
+        logging.info("Received SIGTERM. Shutting down gracefully...")
+        logging.info("Cleanup done. Exiting.")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, handle_sigterm)
