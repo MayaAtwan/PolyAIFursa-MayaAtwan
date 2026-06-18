@@ -304,7 +304,12 @@ def get_predictions_by_score(min_score: float): #  if the user sends string inst
     ]
 
 is_shutting_down = False
-
+@app.get("/health2")
+def health():
+    """
+    Health check endpoint
+    """
+    return {"status": "ok"}
 # health endpoint checks if the service is running and returns a simple JSON response with status "ok" 200.
 @app.get("/health")
 def health():
