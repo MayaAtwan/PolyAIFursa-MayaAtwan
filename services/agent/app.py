@@ -71,19 +71,35 @@ def detect_objects() -> str:
         response.raise_for_status()
         result = response.json()
 
-        uid = result.get("prediction_uid")
-        store = _result_store.get()
-        if uid and store is not None:
-            img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
-            if img_response.status_code == 200:
-                store["annotated_image_b64"] = base64.b64encode(img_response.content).decode()
+    store = _result_store.get()
+    if store is not None:
+        store["prediction_uid"] = result.get("prediction_uid")
 
     return json.dumps(result)
 
 
+@tool
+def get_annotated_image() -> str:
+    """Return the annotated image with bounding boxes from the most recent detection.
+    Only call this when the user explicitly asks to see the annotated image or bounding boxes."""
+    store = _result_store.get()
+    uid = store.get("prediction_uid") if store else None
+    if not uid:
+        return json.dumps({"error": "No detection has been run yet. Use detect_objects first."})
+
+    with httpx.Client(timeout=30.0) as client:
+        img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
+        if img_response.status_code == 200:
+            if store is not None:
+                store["annotated_image_b64"] = base64.b64encode(img_response.content).decode()
+            return json.dumps({"success": True})
+        return json.dumps({"error": f"Could not retrieve image (status {img_response.status_code})"})
+
+
 # Registry: map tool name -> tool function
 TOOLS = {
-    detect_objects.name: detect_objects
+    detect_objects.name: detect_objects,
+    get_annotated_image.name: get_annotated_image,
 }
 
 llm = init_chat_model(MODEL, temperature=0)
