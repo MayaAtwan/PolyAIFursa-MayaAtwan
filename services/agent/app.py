@@ -50,6 +50,7 @@ SYSTEM_PROMPT = (
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
+_annotated_image_b64: ContextVar[Optional[str]] = ContextVar("annotated_image_b64", default=None)
 
 @tool
 def detect_objects() -> str:
@@ -65,7 +66,17 @@ def detect_objects() -> str:
             files={"file": ("image.jpg", io.BytesIO(image_bytes), "image/jpeg")},
         )
         response.raise_for_status()
-    return json.dumps(response.json())
+        result = response.json()
+
+        uid = result.get("prediction_uid")
+        if uid:
+            img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
+            if img_response.status_code == 200:
+                _annotated_image_b64.set(
+                    base64.b64encode(img_response.content).decode()
+                )
+
+    return json.dumps(result)
 
 
 # Registry: map tool name -> tool function
@@ -124,6 +135,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    annotated_image_b64: Optional[str] = None
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -142,11 +154,16 @@ def chat(request: ChatRequest):
         else:
             lc_messages.append(AIMessage(content=msg.content))
 
-    token = _current_image_b64.set(latest_image)
+    image_token = _current_image_b64.set(latest_image)
+    annotated_token = _annotated_image_b64.set(None)
     try:
-        return ChatResponse(response=run_agent(lc_messages))
+        return ChatResponse(
+            response=run_agent(lc_messages),
+            annotated_image_b64=_annotated_image_b64.get(),
+        )
     finally:
-        _current_image_b64.reset(token)
+        _current_image_b64.reset(image_token)
+        _annotated_image_b64.reset(annotated_token)
 
 
 @app.get("/health")
