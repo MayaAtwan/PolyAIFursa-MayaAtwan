@@ -1,0 +1,17 @@
+[Unit]
+Description=PolyAI Vision Frontend (Next.js)
+After=network.target agent.service
+Wants=agent.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/PolyAIFursa-MayaAtwan/services/frontend
+ExecStart=/usr/bin/npm start -- --port 3000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

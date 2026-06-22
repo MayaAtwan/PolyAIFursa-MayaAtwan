@@ -41,6 +41,9 @@ if MODEL not in ALLOWED_MODELS:
         f"Set MODEL in your .env to one of the supported text-only models:\n  {allowed_list}\n"
     )
 
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000")
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 SYSTEM_PROMPT = (
     "You are an AI vision assistant. You help users understand and analyze images. "
     "Use the available tools to extract information from images. "
@@ -101,7 +104,7 @@ app = FastAPI(title="Vision Agent")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["POST", "GET"],
     allow_headers=["Content-Type"],
 )

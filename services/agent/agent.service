@@ -1,0 +1,18 @@
+[Unit]
+Description=PolyAI Vision Agent (FastAPI)
+After=network.target yolo.service
+Wants=yolo.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/PolyAIFursa-MayaAtwan/services/agent
+EnvironmentFile=/home/ubuntu/PolyAIFursa-MayaAtwan/services/agent/.env
+ExecStart=/home/ubuntu/PolyAIFursa-MayaAtwan/services/agent/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
