@@ -1,4 +1,4 @@
-name: Deploy Yolo
+name: Deploy All Services
 
 on:
   push:
@@ -18,13 +18,34 @@ jobs:
           username: ubuntu
           key: ${{ secrets.DEV_INSTANCE_SSH_KEY }}
           script: |
+            set -e
             cd ~/PolyAIFursa-MayaAtwan
             git pull origin dev
+
+            # --- YOLO ---
             source services/yolo/venv/bin/activate
             pip install -r services/yolo/requirements.txt
+            deactivate
             sudo systemctl restart yolo.service
             sleep 5
-            sudo systemctl is-active --quiet yolo.service && echo "Service is running" || (echo "Service failed" && exit 1)
+            sudo systemctl is-active --quiet yolo.service && echo "yolo: running" || (echo "yolo: failed" && exit 1)
+
+            # --- AGENT ---
+            source services/agent/venv/bin/activate
+            pip install -r services/agent/requirements.txt
+            deactivate
+            sudo systemctl restart agent.service
+            sleep 5
+            sudo systemctl is-active --quiet agent.service && echo "agent: running" || (echo "agent: failed" && exit 1)
+
+            # --- FRONTEND ---
+            cd services/frontend
+            npm ci
+            NEXT_PUBLIC_AGENT_URL=http://maya-atwan-dev.fursa.click:8000 npm run build
+            cd ~/PolyAIFursa-MayaAtwan
+            sudo systemctl restart frontend.service
+            sleep 5
+            sudo systemctl is-active --quiet frontend.service && echo "frontend: running" || (echo "frontend: failed" && exit 1)
 
   deploy-prod:
     if: github.ref == 'refs/heads/main'
@@ -37,10 +58,31 @@ jobs:
           username: ubuntu
           key: ${{ secrets.PROD_INSTANCE_SSH_KEY }}
           script: |
+            set -e
             cd ~/PolyAIFursa-MayaAtwan
             git pull origin main
+
+            # --- YOLO ---
             source services/yolo/venv/bin/activate
             pip install -r services/yolo/requirements.txt
+            deactivate
             sudo systemctl restart yolo.service
             sleep 5
-            sudo systemctl is-active --quiet yolo.service && echo "Service is running" || (echo "Service failed" && exit 1)
+            sudo systemctl is-active --quiet yolo.service && echo "yolo: running" || (echo "yolo: failed" && exit 1)
+
+            # --- AGENT ---
+            source services/agent/venv/bin/activate
+            pip install -r services/agent/requirements.txt
+            deactivate
+            sudo systemctl restart agent.service
+            sleep 5
+            sudo systemctl is-active --quiet agent.service && echo "agent: running" || (echo "agent: failed" && exit 1)
+
+            # --- FRONTEND ---
+            cd services/frontend
+            npm ci
+            NEXT_PUBLIC_AGENT_URL=http://maya-atwan-prod.fursa.click:8000 npm run build
+            cd ~/PolyAIFursa-MayaAtwan
+            sudo systemctl restart frontend.service
+            sleep 5
+            sudo systemctl is-active --quiet frontend.service && echo "frontend: running" || (echo "frontend: failed" && exit 1)
