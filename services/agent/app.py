@@ -76,7 +76,7 @@ TOOLS = {
 llm = init_chat_model(MODEL, temperature=0)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
 
-def run_agent(history: list) -> str:
+def run_agent(history: list, max_iterations: int = 10) -> str:
     """
     Simple ReAct loop:
       1. Send messages to the LLM.
@@ -85,7 +85,7 @@ def run_agent(history: list) -> str:
     """
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + history
 
-    while True:
+    for _ in range(max_iterations):
         response: AIMessage = llm_with_tools.invoke(messages)
         messages.append(response)
 
@@ -98,6 +98,8 @@ def run_agent(history: list) -> str:
             tool_fn = TOOLS[tool_call["name"]]
             tool_result = tool_fn.invoke(tool_call)          # returns a ToolMessage
             messages.append(tool_result)
+
+    raise RuntimeError(f"Agent did not finish within {max_iterations} iterations.")
 
 
 app = FastAPI(title="Vision Agent")
