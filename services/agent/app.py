@@ -50,7 +50,10 @@ SYSTEM_PROMPT = (
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
-_annotated_image_b64: ContextVar[Optional[str]] = ContextVar("annotated_image_b64", default=None)
+# Holds a mutable dict so the tool can write back through LangChain's context copy boundary.
+# LangChain's invoke() uses copy_context().run(), which isolates ContextVar *assignments*
+# but not mutations to objects already referenced by the var.
+_result_store: ContextVar[Optional[dict]] = ContextVar("result_store", default=None)
 
 @tool
 def detect_objects() -> str:
@@ -69,12 +72,11 @@ def detect_objects() -> str:
         result = response.json()
 
         uid = result.get("prediction_uid")
-        if uid:
+        store = _result_store.get()
+        if uid and store is not None:
             img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
             if img_response.status_code == 200:
-                _annotated_image_b64.set(
-                    base64.b64encode(img_response.content).decode()
-                )
+                store["annotated_image_b64"] = base64.b64encode(img_response.content).decode()
 
     return json.dumps(result)
 
@@ -154,16 +156,17 @@ def chat(request: ChatRequest):
         else:
             lc_messages.append(AIMessage(content=msg.content))
 
+    result_store: dict = {}
     image_token = _current_image_b64.set(latest_image)
-    annotated_token = _annotated_image_b64.set(None)
+    store_token = _result_store.set(result_store)
     try:
         return ChatResponse(
             response=run_agent(lc_messages),
-            annotated_image_b64=_annotated_image_b64.get(),
+            annotated_image_b64=result_store.get("annotated_image_b64"),
         )
     finally:
         _current_image_b64.reset(image_token)
-        _annotated_image_b64.reset(annotated_token)
+        _result_store.reset(store_token)
 
 
 @app.get("/health")
