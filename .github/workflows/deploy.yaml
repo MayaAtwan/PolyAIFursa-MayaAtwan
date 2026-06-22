@@ -41,7 +41,7 @@ jobs:
             # --- FRONTEND ---
             cd services/frontend
             npm ci
-            NEXT_PUBLIC_AGENT_URL=http://maya-atwan-dev.fursa.click:8000 npm run build
+            NEXT_PUBLIC_AGENT_URL=http://maya-dev.fursa.click:8000 npm run build
             cd ~/PolyAIFursa-MayaAtwan
             sudo systemctl restart frontend.service
             sleep 5
@@ -81,7 +81,7 @@ jobs:
             # --- FRONTEND ---
             cd services/frontend
             npm ci
-            NEXT_PUBLIC_AGENT_URL=http://maya-atwan-prod.fursa.click:8000 npm run build
+            NEXT_PUBLIC_AGENT_URL=http://maya-prod.fursa.click:8000 npm run build
             cd ~/PolyAIFursa-MayaAtwan
             sudo systemctl restart frontend.service
             sleep 5
