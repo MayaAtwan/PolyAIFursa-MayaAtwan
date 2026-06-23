@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from prometheus_fastapi_instrumentator import Instrumentator
+from pydantic import BaseModel
 from ultralytics import YOLO
 from PIL import Image
 import sqlite3
@@ -43,6 +46,22 @@ os.makedirs(PREDICTED_DIR, exist_ok=True)
 
 # Download the AI model (tiny model ~6MB)
 model = YOLO("yolov8n.pt")  
+
+class DetectionObject(BaseModel):
+    id: int
+    label: str
+    score: float
+    box: list[float]
+
+
+class PredictResponse(BaseModel):
+    uid: str
+    timestamp: datetime
+    original_image: str
+    predicted_image: str
+    detection_objects: list[DetectionObject]
+    processing_time_s: float
+
 
 # Initialize SQLite
 def init_db():
@@ -97,59 +116,52 @@ def save_detection_object(prediction_uid, label, score, box):
         """, (prediction_uid, label, score, str(box)))
 
 
-@app.post("/predict")
+@app.post("/predict", response_model=PredictResponse)
 def predict(file: UploadFile = File(...)):
     """
     Predict objects in an image
     """
-    # Validate file type
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only image files are supported")
-    
+
     start_time = time.time()
 
-    # Generate a unique ID for this prediction session and save the original and predicted images
     uid = str(uuid.uuid4())
+    timestamp = datetime.now(timezone.utc)
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
     predicted_path = os.path.join(PREDICTED_DIR, uid + ext)
 
-    # Save the uploaded file to disk, wb mode to handle binary data correctly
-    # wb means "write binary" and is necessary for saving image files without corruption
     with open(original_path, "wb") as f:
-        shutil.copyfileobj(file.file, f) #shutil means to copy file-like objects efficiently without loading the entire file into memory
+        shutil.copyfileobj(file.file, f)
 
-    # Run the YOLO model on the saved image with the specified confidence threshold
     results = model(original_path, device="cpu", conf=CONFIDENCE_THRESHOLD)
 
-    # Save the annotated image with bounding boxes drawn on it
-    annotated_frame = results[0].plot()  # NumPy image with boxes
+    annotated_frame = results[0].plot()
     annotated_image = Image.fromarray(annotated_frame)
     annotated_image.save(predicted_path)
 
-    # Save the prediction session to the database
     save_prediction_session(uid, original_path, predicted_path)
-    
-    # Save each detected object to the database and collect labels for the response
-    detected_labels = []
-    for box in results[0].boxes:
+
+    detection_objects = []
+    for idx, box in enumerate(results[0].boxes):
         label_idx = int(box.cls[0].item())
         label = model.names[label_idx]
         score = float(box.conf[0])
         bbox = box.xyxy[0].tolist()
         save_detection_object(uid, label, score, bbox)
-        detected_labels.append(label)
+        detection_objects.append(DetectionObject(id=idx, label=label, score=score, box=bbox))
 
-    processing_time = round(time.time() - start_time, 2)
-
-    return {
-        "prediction_uid": uid,
-        "detection_count": len(results[0].boxes),
-        "labels": detected_labels,
-        "time_took": processing_time
-    }
+    return PredictResponse(
+        uid=uid,
+        timestamp=timestamp,
+        original_image=original_path,
+        predicted_image=predicted_path,
+        detection_objects=detection_objects,
+        processing_time_s=round(time.time() - start_time, 2),
+    )
 
 @app.get("/prediction/{uid}")
 def get_prediction_by_uid(uid: str):

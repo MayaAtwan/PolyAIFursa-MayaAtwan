@@ -25,9 +25,9 @@ def test_predict_returns_prediction_data(client, monkeypatch):
     assert response.status_code == 200
 
     data = response.json()
-    assert "prediction_uid" in data
-    assert data["detection_count"] == 1
-    assert data["labels"] == ["person"]
+    assert "uid" in data
+    assert len(data["detection_objects"]) == 1
+    assert data["detection_objects"][0]["label"] == "person"
 
 
 def test_predict_rejects_non_image_file(client):

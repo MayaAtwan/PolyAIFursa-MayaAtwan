@@ -23,6 +23,6 @@ class TestPredictionTime(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertIn("time_took", data)
-        self.assertIsInstance(data["time_took"], (int, float))
-        self.assertGreaterEqual(data["time_took"], 0)
+        self.assertIn("processing_time_s", data)
+        self.assertIsInstance(data["processing_time_s"], (int, float))
+        self.assertGreaterEqual(data["processing_time_s"], 0)
