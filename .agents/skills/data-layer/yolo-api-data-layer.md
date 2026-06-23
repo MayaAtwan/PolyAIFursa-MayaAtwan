@@ -1,13 +1,23 @@
+---
+name: yolo-api-data-layer
+description: >
+  Activate when the task touches the YOLO service database layer: adding or changing API
+  endpoints that read or write data, migrating from raw SQL to SQLAlchemy, adding columns
+  or tables to prediction_sessions or detection_objects, writing or fixing tests for any
+  DB-touching code, or switching the database backend between SQLite and PostgreSQL.
+---
+
 # yolo-api-data-layer
 
-Use this skill whenever a task involves the YOLO service database layer: migrating from raw SQL,
-adding endpoints that read or write data, adding columns or tables, writing tests for DB-touching
-code, or switching the database backend.
+> **IMPORTANT: Read this entire file before taking any action.** Do not explore the project,
+> read source files, or make any changes until you have finished reading this skill. All
+> necessary context (schema, ORM patterns, hard rules, test isolation) is documented here —
+> start from this skill, not from the codebase.
 
 ## Activate on prompts like
 
-- "refactor the api to use sqlalchemy"
 - "add an endpoint GET /predictions/recent that returns the 10 most recent sessions"
+- "refactor the api to use sqlalchemy"
 - "add a UserFeedback table to track user ratings per prediction"
 - "write tests for the /predict endpoint"
 - "the database layer doesn't follow our architectural design, fix it"
@@ -137,7 +147,7 @@ def get_db():
 
 ---
 
-## app.py — required changes for SQLAlchemy
+## app.py — required patterns
 
 ### Imports to add
 ```python
@@ -196,6 +206,16 @@ if not session:
 objects = db.query(DetectionObjectModel).filter(DetectionObjectModel.prediction_uid == uid).all()
 ```
 
+**SELECT N most recent sessions:**
+```python
+sessions = (
+    db.query(PredictionSession)
+    .order_by(PredictionSession.timestamp.desc())
+    .limit(n)
+    .all()
+)
+```
+
 **JOIN sessions + objects filtered by label:**
 ```python
 rows = (
@@ -233,7 +253,6 @@ objects = (
 Use FastAPI's dependency override mechanism instead:
 
 ```python
-# imports
 from app import app
 from db import get_db
 from models import Base, PredictionSession, DetectionObjectModel
@@ -292,24 +311,6 @@ def seeded_db():
     db.close()
 ```
 
-**Any test file that previously imported `save_prediction_session` or `save_detection_object`
-must be updated.** Replace those calls with a local helper that seeds via ORM:
-```python
-from app import app
-from db import get_db
-from models import PredictionSession, DetectionObjectModel
-from sqlalchemy.orm import Session
-
-def _seed(uid, orig, pred, detections=()):
-    db: Session = next(app.dependency_overrides[get_db]())
-    db.add(PredictionSession(uid=uid, original_image=orig, predicted_image=pred))
-    db.flush()
-    for label, score, box in detections:
-        db.add(DetectionObjectModel(prediction_uid=uid, label=label, score=score, box=str(box)))
-    db.commit()
-    db.close()
-```
-
 **For unittest.TestCase-style tests** (e.g., `test_prediction_time.py`), install the
 override in `setUp` and clear it in `tearDown`:
 ```python
@@ -340,6 +341,19 @@ def setUp(self):
 def tearDown(self):
     app.dependency_overrides.pop(get_db, None)
     os.unlink(self._db_file)
+```
+
+**Any test file that previously imported `save_prediction_session` or `save_detection_object`
+must be updated.** Replace those calls with a local helper that seeds via ORM:
+```python
+def _seed(uid, orig, pred, detections=()):
+    db: Session = next(app.dependency_overrides[get_db]())
+    db.add(PredictionSession(uid=uid, original_image=orig, predicted_image=pred))
+    db.flush()
+    for label, score, box in detections:
+        db.add(DetectionObjectModel(prediction_uid=uid, label=label, score=score, box=str(box)))
+    db.commit()
+    db.close()
 ```
 
 ---
