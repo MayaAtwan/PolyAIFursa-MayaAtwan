@@ -1,10 +1,12 @@
 ---
 name: yolo-api-data-layer
-description: >
-  Activate when the task touches the YOLO service database layer: adding or changing API
-  endpoints that read or write data, migrating from raw SQL to SQLAlchemy, adding columns
-  or tables to prediction_sessions or detection_objects, writing or fixing tests for any
-  DB-touching code, or switching the database backend between SQLite and PostgreSQL.
+description: >-
+  SQLAlchemy ORM conventions for the YOLO FastAPI data layer in services/yolo/
+  (prediction_sessions and detection_objects tables, get_db dependency, dependency-override
+  test isolation). Use when adding or changing DB-backed endpoints, migrating raw SQL or
+  sqlite3 to the ORM, adding columns or tables, fixing tests that touch the database, or
+  switching the sqlite/postgres backend. Not for YOLO inference, image handling, the agent
+  service, or frontend-only work.
 ---
 
 # yolo-api-data-layer
@@ -14,16 +16,37 @@ description: >
 > necessary context (schema, ORM patterns, hard rules, test isolation) is documented here —
 > start from this skill, not from the codebase.
 
-## Activate on prompts like
+## When to use this skill
 
+### Use it — direct requests
 - "add an endpoint GET /predictions/recent that returns the 10 most recent sessions"
 - "refactor the api to use sqlalchemy"
 - "add a UserFeedback table to track user ratings per prediction"
-- "write tests for the /predict endpoint"
-- "the database layer doesn't follow our architectural design, fix it"
-- "delete a prediction session and all its detection objects by uid"
 - "add a column `processing_time_ms` to the prediction_sessions table"
+- "delete a prediction session and all its detection objects by uid"
 - "make the database backend configurable so we can use postgres in production"
+- "write tests for the /predict endpoint"
+
+### Use it — indirectly worded requests (same underlying task)
+- "we're still using raw sqlite3 in the yolo service — clean that up" → migrate to ORM
+- "the database layer doesn't follow our architectural design, fix it" → ORM refactor
+- "store how long each prediction took" → add a column to prediction_sessions
+- "let users filter detections by confidence" → new ORM query endpoint
+- "the recent-predictions test fails with a locked database" → test isolation via dependency override
+- "we need to run this on a real Postgres instance in prod" → DB_BACKEND configuration
+- "persist a new piece of data per detection" → add a column to detection_objects
+
+### Do NOT use it — out of scope (different part of the system)
+- "make YOLO detect only people, not cars" → inference/model logic, no DB change
+- "the annotated image isn't being returned" → image handling in app.py, not the data layer
+- "fix the tool-calling loop in the agent" → services/agent/ (LangChain), not the YOLO DB
+- "the chat UI doesn't scroll" → frontend only
+- "upgrade ultralytics to the latest version" → dependency bump, no schema or query work
+
+> Boundary rule: this skill owns **how data is modeled, queried, and persisted** in
+> `services/yolo/`. It does not own model inference, image I/O, the agent service, or the
+> frontend. If a task only reads request/response fields and never touches a model, query,
+> session, or migration, it is out of scope.
 
 ---
 
@@ -382,6 +405,7 @@ def _seed(uid, orig, pred, detections=()):
 - **`Depends(get_db)`** must appear on every endpoint that reads or writes the DB
 - **`Base.metadata.create_all(bind=engine)`** must be at module level, not inside `__main__`
 - **`box` stays a raw string** in label and score endpoint responses (existing tests assert string equality)
+- **Public API unchanged** — every existing endpoint path, HTTP status code, and JSON response shape stays identical; this refactor is internal-only
 
 ---
 
