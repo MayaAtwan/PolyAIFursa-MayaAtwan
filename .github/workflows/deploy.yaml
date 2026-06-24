@@ -20,8 +20,7 @@ jobs:
           script: |
             set -e
             cd ~/PolyAIFursa-MayaAtwan
-            git fetch origin dev
-            git reset --hard origin/dev
+            git pull origin dev
 
             # --- YOLO ---
             source services/yolo/venv/bin/activate
