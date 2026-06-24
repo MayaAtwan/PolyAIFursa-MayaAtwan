@@ -1,351 +1,83 @@
 [
   {
     "id": "eval-01-full-refactor",
-    "description": "Agent replaces all raw SQLite logic with SQLAlchemy across the YOLO service",
     "prompt": "refactor the api to use sqlalchemy",
-    "expected_actions": [
-      "Read services/yolo/app.py to understand current sqlite3 usage",
-      "Read services/yolo/tests/conftest.py to understand test isolation approach",
-      "Create services/yolo/models.py with PredictionSession and DetectionObjectModel classes",
-      "Create services/yolo/db.py with engine factory, SessionLocal, and get_db() generator",
-      "Remove import sqlite3, DB_PATH, init_db(), save_prediction_session(), save_detection_object() from app.py",
-      "Add Base.metadata.create_all(bind=engine) at module level in app.py (not inside __main__)",
-      "Add db: Session = Depends(get_db) to every endpoint that touches the DB",
-      "Replace sqlite3 query blocks in all endpoints with SQLAlchemy ORM calls",
-      "Update requirements.txt to include sqlalchemy>=2.0 and psycopg2-binary>=2.9",
-      "Update tests/conftest.py to use app.dependency_overrides[get_db] instead of monkeypatching DB_PATH",
-      "Update seeded_db fixture to insert data via ORM model instances",
-      "Update tests/test_prediction_uid.py to replace save_prediction_session/save_detection_object calls with ORM inserts",
-      "Update tests/test_prediction_time.py setUp to use dependency override instead of app_module.DB_PATH + init_db()",
-      "Run pytest to confirm all tests pass"
-    ],
+    "expected_output": "Creates services/yolo/models.py (PredictionSession + DetectionObjectModel) and services/yolo/db.py (engine, SessionLocal, get_db). Removes import sqlite3, DB_PATH, init_db, save_prediction_session, and save_detection_object from app.py; adds Base.metadata.create_all(bind=engine) at module level and db: Session = Depends(get_db) on every DB endpoint. Converts conftest.py to dependency_overrides isolation. No raw SQL or sqlite3 remains, existing endpoints/status codes/response shapes are unchanged, and pytest passes.",
     "assertions": [
-      {
-        "type": "file_exists",
-        "path": "services/yolo/models.py"
-      },
-      {
-        "type": "file_exists",
-        "path": "services/yolo/db.py"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/models.py",
-        "pattern": "class PredictionSession"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/models.py",
-        "pattern": "class DetectionObjectModel"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "def get_db"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "DB_BACKEND"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "import sqlite3"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "DB_PATH"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "def init_db"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "def save_prediction_session"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "def save_detection_object"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "sqlite3.connect"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "Depends(get_db)",
-        "min_occurrences": 5
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "Base.metadata.create_all"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/requirements.txt",
-        "pattern": "sqlalchemy"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/requirements.txt",
-        "pattern": "psycopg2-binary"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/tests/conftest.py",
-        "pattern": "dependency_overrides"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/tests/conftest.py",
-        "pattern": "init_db"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/tests/conftest.py",
-        "pattern": "save_prediction_session"
-      },
-      {
-        "type": "command_passes",
-        "command": "cd services/yolo && pytest --tb=short -q"
-      }
+      { "type": "file_exists", "path": "services/yolo/models.py" },
+      { "type": "file_exists", "path": "services/yolo/db.py" },
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "class PredictionSession" },
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "class DetectionObjectModel" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "def get_db" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "import sqlite3" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "DB_PATH" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "sqlite3.connect" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "Depends(get_db)", "min_occurrences": 5 },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "Base.metadata.create_all" },
+      { "type": "file_contains", "path": "services/yolo/requirements.txt", "pattern": "sqlalchemy" },
+      { "type": "file_contains", "path": "services/yolo/tests/conftest.py", "pattern": "dependency_overrides" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest --tb=short -q" }
     ]
   },
   {
     "id": "eval-02-add-column",
-    "description": "Agent adds a new column to an existing SQLAlchemy model and updates the write path",
     "prompt": "add a `processing_time_ms` INTEGER column to the prediction_sessions table to store how long inference took in milliseconds",
-    "expected_actions": [
-      "Read services/yolo/models.py",
-      "Add processing_time_ms = Column(Integer, nullable=True) to PredictionSession",
-      "Read services/yolo/app.py POST /predict endpoint",
-      "Compute processing_time_ms from start_time and pass it when creating PredictionSession",
-      "Delete predictions.db so the schema is recreated on next startup",
-      "Run pytest to confirm no regressions"
-    ],
+    "expected_output": "Adds processing_time_ms = Column(Integer, nullable=True) to PredictionSession in models.py and writes the value when creating the session on POST /predict. Uses the ORM only — no ALTER TABLE or CREATE TABLE strings. pytest still passes.",
     "assertions": [
-      {
-        "type": "file_contains",
-        "path": "services/yolo/models.py",
-        "pattern": "processing_time_ms"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/models.py",
-        "pattern": "Column(Integer"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "import sqlite3"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "ALTER TABLE"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "CREATE TABLE"
-      },
-      {
-        "type": "command_passes",
-        "command": "cd services/yolo && pytest --tb=short -q"
-      }
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "processing_time_ms" },
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "Column(Integer" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "ALTER TABLE" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "CREATE TABLE" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest --tb=short -q" }
     ]
   },
   {
     "id": "eval-03-new-endpoint",
-    "description": "Agent adds a new read endpoint that uses the SQLAlchemy ORM session",
     "prompt": "add a GET /predictions/recent endpoint that returns the 10 most recent prediction sessions ordered by timestamp descending",
-    "expected_actions": [
-      "Read services/yolo/app.py to understand the existing endpoint pattern",
-      "Add the endpoint with db: Session = Depends(get_db)",
-      "Query using db.query(PredictionSession).order_by(PredictionSession.timestamp.desc()).limit(10).all()",
-      "Return a list of dicts with uid, timestamp, original_image, predicted_image fields",
-      "Verify no raw SQL is used"
-    ],
+    "expected_output": "Adds a GET /predictions/recent endpoint with db: Session = Depends(get_db) that queries db.query(PredictionSession).order_by(PredictionSession.timestamp.desc()).limit(10).all() and returns uid/timestamp/original_image/predicted_image. No raw SQL (no ORDER BY string).",
     "assertions": [
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "/predictions/recent"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "Depends(get_db)"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": ".desc()"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": ".limit(10)"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "sqlite3.connect"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "ORDER BY"
-      },
-      {
-        "type": "command_passes",
-        "command": "cd services/yolo && pytest --tb=short -q"
-      }
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "/predictions/recent" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "Depends(get_db)" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": ".desc()" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": ".limit(10)" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "ORDER BY" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest --tb=short -q" }
     ]
   },
   {
     "id": "eval-04-write-test",
-    "description": "Agent writes a test using the SQLAlchemy test isolation pattern — no raw SQLite",
     "prompt": "write a test for the GET /predictions/recent endpoint",
-    "expected_actions": [
-      "Read services/yolo/tests/conftest.py to understand the dependency override pattern",
-      "Create a new test file or add to an existing one",
-      "Use the client fixture (not TestClient(app) directly)",
-      "Seed data using ORM model instances via app.dependency_overrides[get_db]",
-      "Assert the response is 200, returns a list, and results are ordered by timestamp descending",
-      "Do not import init_db, save_prediction_session, or save_detection_object",
-      "Do not import sqlite3"
-    ],
+    "expected_output": "Creates tests/test_predictions_recent.py that seeds via ORM model instances through app.dependency_overrides[get_db] and asserts a 200 list ordered by timestamp descending. Does not import sqlite3, init_db, save_prediction_session, or save_detection_object.",
     "assertions": [
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/tests/test_predictions_recent.py",
-        "pattern": "import sqlite3"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/tests/test_predictions_recent.py",
-        "pattern": "init_db"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/tests/test_predictions_recent.py",
-        "pattern": "save_prediction_session"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/tests/test_predictions_recent.py",
-        "pattern": "save_detection_object"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/tests/test_predictions_recent.py",
-        "pattern": "dependency_overrides"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/tests/test_predictions_recent.py",
-        "pattern": "PredictionSession"
-      },
-      {
-        "type": "command_passes",
-        "command": "cd services/yolo && pytest tests/test_predictions_recent.py --tb=short -q"
-      }
+      { "type": "file_not_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "import sqlite3" },
+      { "type": "file_not_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "save_prediction_session" },
+      { "type": "file_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "dependency_overrides" },
+      { "type": "file_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "PredictionSession" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest tests/test_predictions_recent.py --tb=short -q" }
     ]
   },
   {
     "id": "eval-05-postgres-config",
-    "description": "Agent explains and applies PostgreSQL backend configuration using environment variables only",
     "prompt": "configure the service to use a PostgreSQL database: host=db, port=5432, database=yolodb, user=yolo, password=secret",
-    "expected_actions": [
-      "Read services/yolo/db.py",
-      "Explain that DB_BACKEND, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD env vars control the connection — no code change needed",
-      "Confirm psycopg2-binary is in requirements.txt",
-      "Optionally show the docker run command for local testing"
-    ],
+    "expected_output": "Explains that DB_BACKEND, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD env vars control the connection and no code change is needed, and confirms psycopg2-binary is in requirements.txt. Credentials are never hardcoded into db.py.",
     "assertions": [
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "yolodb"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "secret"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "yolo\":"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "DB_BACKEND"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "DB_USER"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/db.py",
-        "pattern": "DB_PASSWORD"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/requirements.txt",
-        "pattern": "psycopg2-binary"
-      }
+      { "type": "file_not_contains", "path": "services/yolo/db.py", "pattern": "yolodb" },
+      { "type": "file_not_contains", "path": "services/yolo/db.py", "pattern": "secret" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "DB_BACKEND" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "DB_USER" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "DB_PASSWORD" },
+      { "type": "file_contains", "path": "services/yolo/requirements.txt", "pattern": "psycopg2-binary" }
     ]
   },
   {
     "id": "eval-06-no-raw-sql-regression",
-    "description": "Agent debugs a query bug using only ORM expressions — no raw SQL introduced",
     "prompt": "the GET /predictions/score/{min_score} endpoint is returning dog (score 0.49) when I query with min_score=0.5 — fix it without using raw SQL",
-    "expected_actions": [
-      "Read services/yolo/app.py get_predictions_by_score function",
-      "Identify that score is stored as Float (not Text) so ORM >= comparison is correct",
-      "Check whether the seeded_db fixture is storing score as a Python float vs string",
-      "Fix the root cause using only ORM filter expressions",
-      "Run pytest to confirm the fix"
-    ],
+    "expected_output": "Fixes the score filter using only ORM expressions (DetectionObjectModel.score >= min_score, with score stored as Float). Introduces no sqlite3 or raw SELECT/WHERE strings. The score test passes.",
     "assertions": [
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "sqlite3.connect"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "SELECT"
-      },
-      {
-        "type": "file_not_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "WHERE score"
-      },
-      {
-        "type": "file_contains",
-        "path": "services/yolo/app.py",
-        "pattern": "DetectionObjectModel.score >="
-      },
-      {
-        "type": "command_passes",
-        "command": "cd services/yolo && pytest tests/test_predictions_score.py --tb=short -q"
-      }
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "sqlite3.connect" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "SELECT" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "DetectionObjectModel.score >=" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest tests/test_predictions_score.py --tb=short -q" }
     ]
   }
 ]
