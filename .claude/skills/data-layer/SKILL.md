@@ -19,6 +19,84 @@ description: >-
 
 ---
 
+## MANDATORY CHECKLIST — RUN THIS BEFORE ANYTHING ELSE
+
+This checklist applies to every task without exception:
+adding an endpoint, writing tests, adding a column, fixing a bug, refactoring — all of them.
+There is no task in this skill that skips this checklist.
+Do not write a single line of code until every item below is confirmed.
+
+---
+
+### Checklist item 1 — verify or create `models.py`
+
+```bash
+cat services/yolo/models.py 2>&1
+```
+
+- If the file exists and contains `class PredictionSession(Base)` → move to item 2
+- If missing or contains `sqlite3` → create it now using the canonical implementation below. Do not continue until this is done.
+
+---
+
+### Checklist item 2 — verify or create `db.py`
+
+```bash
+cat services/yolo/db.py 2>&1
+```
+
+- If the file exists and contains `def get_db()` and `SessionLocal` → move to item 3
+- If missing or contains `sqlite3` → create it now using the canonical implementation below. Do not continue until this is done.
+
+---
+
+### Checklist item 3 — verify `app.py` is off sqlite3
+
+```bash
+grep -n "import sqlite3\|DB_PATH\|def init_db\|def save_prediction" services/yolo/app.py
+```
+
+- If the grep returns nothing → move to item 4
+- If the grep returns any output → migrate `app.py` now: remove `import sqlite3`, `DB_PATH`, `init_db()`, `save_prediction_session()`, `save_detection_object()`, replace all raw SQL with ORM calls using `Depends(get_db)`. Do not continue until this is done.
+
+---
+
+### Checklist item 4 — verify test files are off sqlite3
+
+```bash
+grep -rn "import sqlite3\|save_prediction_session\|save_detection_object\|init_db\|DB_PATH" services/yolo/tests/
+```
+
+- If the grep returns nothing → move to item 5
+- If the grep returns any output → update every file listed:
+  - `conftest.py` → replace `DB_PATH` monkeypatching with `dependency_overrides` (see Test isolation section)
+  - any test importing old helpers → replace with ORM `_seed()` helper
+  - any `unittest.TestCase` → update `setUp`/`tearDown` with dependency override pattern
+  - Do not continue until the grep returns nothing.
+
+---
+
+### Checklist item 5 — verify all existing tests pass
+
+```bash
+wsl bash -c "cd /home/maya_atwan/PolyAIFursa-MayaAtwan/services/yolo && /home/maya_atwan/PolyAIFursa-MayaAtwan/.venv/bin/pytest --tb=short -q 2>&1"
+```
+
+- If all tests pass → the codebase is in the correct state. Now implement the requested task.
+- If any test fails → fix the failure before touching anything else. Do not implement the requested task until the full test suite is green.
+
+---
+
+**Only after all five checklist items are confirmed can you begin the actual task.**
+
+> There is no exception to this checklist. Not for "write tests", not for "add a comment",
+> not for "quick fix". Every task starts here.
+> "The codebase uses sqlite3" is not an exception — it means items 1–4 are incomplete.
+> "I'll match the existing pattern" is not allowed — the existing pattern is wrong.
+> The checklist exists precisely because the codebase may not be in the correct state yet.
+
+---
+
 ## Project structure
 
 ```
@@ -30,8 +108,6 @@ services/yolo/
 └── tests/
     └── conftest.py  ← test DB isolation via dependency_overrides
 ```
-
-Read `models.py`, `db.py`, `app.py`, and `tests/conftest.py` before making changes.
 
 ---
 
@@ -128,6 +204,13 @@ Base.metadata.create_all(bind=engine)
 ```
 Place right after `app = FastAPI()`. Pytest imports the module directly — tables must
 exist before any test runs.
+
+### Remove from app.py entirely
+- `import sqlite3`
+- `DB_PATH = "predictions.db"`
+- `def init_db():`
+- `def save_prediction_session(...):`
+- `def save_detection_object(...):`
 
 ### Every DB endpoint signature
 ```python
@@ -258,14 +341,28 @@ def seeded_db():
 | `create_all` at module level | Not inside `__main__` |
 | `box` stays a raw string | In label/score endpoints — tests assert string equality |
 | API unchanged | Same paths, status codes, response shapes after any refactor |
+| ORM layer first | Never add a feature on top of sqlite3 — create models.py and db.py first |
 
 ---
 
 ## Verification — run after every change
 
 ```bash
-grep -n "import sqlite3" services/yolo/app.py      # must be empty
-grep -n "DB_PATH" services/yolo/app.py             # must be empty
-cd services/yolo && pytest --tb=short -q           # all tests must pass
-python app.py                                       # must start on port 8080
+# App code — must all return empty
+grep -n "import sqlite3" services/yolo/app.py
+grep -n "DB_PATH" services/yolo/app.py
+grep -n "def init_db" services/yolo/app.py
+
+# Test files — must all return empty
+grep -rn "import sqlite3" services/yolo/tests/
+grep -rn "save_prediction_session\|save_detection_object" services/yolo/tests/
+grep -rn "DB_PATH\|init_db" services/yolo/tests/
+
+# Tests must all pass with no failures
+cd services/yolo && pytest --tb=short -q
+
+# App must start cleanly
+python app.py
 ```
+
+If any grep returns output, or any test fails — fix it before marking the task done.
