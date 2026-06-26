@@ -1,23 +1,22 @@
-# pytest has a special rule : any file named conftest.py is automatically imported by pytest loaded before any test runs.
-
-import io # this is used to create an in memory and not on disk file object for testing image uploads
+import io
 import os
 
 import numpy as np
 import pytest
-# without running a live server, we can use the TestClient to make requests to the API endpoints and test their behavior
-from fastapi.testclient import TestClient # this is used to create a test client for the fastapi application, allowing us to make requests to the API endpoints without running a live server
-
+from fastapi.testclient import TestClient
 from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
 
 os.environ.setdefault("CONFIDENCE_THRESHOLD", "0.5")
 
 import app as app_module
-from app import app, init_db, save_detection_object, save_prediction_session
+from app import app
+from db import get_db
+from models import Base, PredictionSession, DetectionObjectModel
 
 
 # ── Fake YOLO model ───────────────────────────────────────────────────────────
-# Replaces the real model so tests never download weights or run inference.
 
 class FakeValue:
     def __init__(self, v):
@@ -47,7 +46,7 @@ class FakeResult:
 
 class FakeModel:
     names = {0: "person"}
-    # call method allows an instance of the class to be called as a function, so when we call the fake model with an image path, it returns a list containing a single FakeResult object, which simulates the output of a real YOLO model without performing any actual inference or downloading weights. 
+
     def __call__(self, path, device="cpu", conf=0.5):
         return [FakeResult()]
 
@@ -56,23 +55,26 @@ class FakeModel:
 
 @pytest.fixture(autouse=True)
 def setup_db_and_dirs(tmp_path, monkeypatch):
-    """
-    SETUP:    Create an isolated temp DB and upload dirs; patch module globals.
-    TEARDOWN: pytest removes tmp_path automatically after each test — no manual
-              cleanup needed.
-    """
-    db_file = str(tmp_path / "test.db")
-    upload_dir = str(tmp_path / "uploads" / "original")
-    predicted_dir = str(tmp_path / "uploads" / "predicted")
+    test_engine = create_engine(
+        f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(bind=test_engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
-    os.makedirs(upload_dir, exist_ok=True)
-    os.makedirs(predicted_dir, exist_ok=True)
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
 
-    monkeypatch.setattr(app_module, "DB_PATH", db_file)
-    monkeypatch.setattr(app_module, "UPLOAD_DIR", upload_dir)
-    monkeypatch.setattr(app_module, "PREDICTED_DIR", predicted_dir)
-
-    init_db()
+    app.dependency_overrides[get_db] = override_get_db
+    monkeypatch.setattr(app_module, "UPLOAD_DIR", str(tmp_path / "uploads/original"))
+    monkeypatch.setattr(app_module, "PREDICTED_DIR", str(tmp_path / "uploads/predicted"))
+    os.makedirs(str(tmp_path / "uploads/original"), exist_ok=True)
+    os.makedirs(str(tmp_path / "uploads/predicted"), exist_ok=True)
+    yield
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
@@ -88,24 +90,39 @@ def seeded_db():
     Session abc-123: person (score 0.91) + car (score 0.50)
     Session def-456: dog (score 0.49)
     """
-    save_prediction_session(
-        "abc-123",
-        "uploads/original/abc-123.jpg",
-        "uploads/predicted/abc-123.jpg",
-    )
-    save_detection_object("abc-123", "person", 0.91, [10, 20, 100, 200])
-    save_detection_object("abc-123", "car", 0.50, [1, 2, 3, 4])
+    db: Session = next(app.dependency_overrides[get_db]())
+    db.add_all([
+        PredictionSession(uid="abc-123", original_image="uploads/original/abc-123.jpg",
+                          predicted_image="uploads/predicted/abc-123.jpg"),
+        PredictionSession(uid="def-456", original_image="uploads/original/def-456.jpg",
+                          predicted_image="uploads/predicted/def-456.jpg"),
+    ])
+    db.flush()
+    db.add_all([
+        DetectionObjectModel(prediction_uid="abc-123", label="person", score=0.91, box="[10, 20, 100, 200]"),
+        DetectionObjectModel(prediction_uid="abc-123", label="car", score=0.50, box="[1, 2, 3, 4]"),
+        DetectionObjectModel(prediction_uid="def-456", label="dog", score=0.49, box="[5, 6, 7, 8]"),
+    ])
+    db.commit()
+    db.close()
 
-    save_prediction_session(
-        "def-456",
-        "uploads/original/def-456.jpg",
-        "uploads/predicted/def-456.jpg",
-    )
-    save_detection_object("def-456", "dog", 0.49, [5, 6, 7, 8])
+
+# ── ORM seed helpers (used by test files instead of old sqlite3 helpers) ──────
+
+def save_prediction_session(uid, original_image, predicted_image):
+    db: Session = next(app.dependency_overrides[get_db]())
+    db.add(PredictionSession(uid=uid, original_image=original_image, predicted_image=predicted_image))
+    db.commit()
+    db.close()
 
 
-#Creates an in-memory buffer — think of it as a fake file that lives in RAM instead of on your hard drive. 
-# It behaves exactly like a real file (you can read and write to it), but nothing touches the disk.
+def save_detection_object(prediction_uid, label, score, box):
+    db: Session = next(app.dependency_overrides[get_db]())
+    db.add(DetectionObjectModel(prediction_uid=prediction_uid, label=label, score=score, box=str(box)))
+    db.commit()
+    db.close()
+
+
 def make_jpeg_bytes():
     """Return a minimal in-memory JPEG for upload tests."""
     buf = io.BytesIO()
