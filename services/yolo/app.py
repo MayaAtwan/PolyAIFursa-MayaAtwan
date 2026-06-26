@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi.responses import FileResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -20,21 +20,15 @@ from models import Base, PredictionSession, DetectionObjectModel
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-# Disable GPU usage
 import torch
 torch.cuda.is_available = lambda: False
 
 app = FastAPI()
 
-# Create tables at module level so they exist on import (required for pytest)
-Base.metadata.create_all(bind=engine)
-
-# Expose /metrics endpoint with default process metrics + FastAPI HTTP metrics
 Instrumentator().instrument(app).expose(app)
 
-# Confidence threshold for object detection (0.0 - 1.0).
-# Detections below this score are discarded.
-# Override with: export CONFIDENCE_THRESHOLD=0.7
+Base.metadata.create_all(bind=engine)
+
 _raw_threshold = os.environ.get("CONFIDENCE_THRESHOLD")
 if _raw_threshold is not None:
     CONFIDENCE_THRESHOLD = float(_raw_threshold)
@@ -49,8 +43,8 @@ PREDICTED_DIR = "uploads/predicted"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PREDICTED_DIR, exist_ok=True)
 
-# Download the AI model (tiny model ~6MB)
 model = YOLO("yolov8n.pt")
+
 
 class DetectionObject(BaseModel):
     id: int
@@ -70,9 +64,6 @@ class PredictResponse(BaseModel):
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """
-    Predict objects in an image
-    """
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
     ext = os.path.splitext(file.filename)[1].lower()
@@ -97,7 +88,7 @@ def predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
     session = PredictionSession(uid=uid, original_image=original_path, predicted_image=predicted_path)
     db.add(session)
-    db.flush()  # flush so FK is satisfied before adding objects
+    db.flush()
 
     detection_objects = []
     for idx, box in enumerate(results[0].boxes):
@@ -105,8 +96,7 @@ def predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
         label = model.names[label_idx]
         score = float(box.conf[0])
         bbox = box.xyxy[0].tolist()
-        obj = DetectionObjectModel(prediction_uid=uid, label=label, score=score, box=str(bbox))
-        db.add(obj)
+        db.add(DetectionObjectModel(prediction_uid=uid, label=label, score=score, box=str(bbox)))
         detection_objects.append(DetectionObject(id=idx, label=label, score=score, box=bbox))
 
     db.commit()
@@ -120,11 +110,9 @@ def predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
         processing_time_s=round(time.time() - start_time, 2),
     )
 
+
 @app.get("/prediction/{uid}")
 def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
-    """
-    Get prediction session by uid with all detected objects
-    """
     session = db.query(PredictionSession).filter(PredictionSession.uid == uid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Prediction not found")
@@ -142,39 +130,27 @@ def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
                 "label": obj.label,
                 "score": obj.score,
                 "box": obj.box,
-            } for obj in objects
-        ]
+            }
+            for obj in objects
+        ],
     }
-
 
 
 @app.get("/prediction/{uid}/image")
 def get_prediction_image(uid: str, db: Session = Depends(get_db)):
-    """
-    Return the annotated (bounding-box) image for a prediction
-    """
     session = db.query(PredictionSession).filter(PredictionSession.uid == uid).first()
     if not session or not os.path.exists(session.predicted_image):
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(session.predicted_image)
 
-# when getting get request with empty label we return 400 error
-# this is necessary because this endpoint doesnt match the endpoint with label parameter, so we need to handle it separately
+
 @app.get("/predictions/label/")
 def get_predictions_by_empty_label():
-    """
-    Return 400 when label is empty
-    """
     raise HTTPException(status_code=400, detail="Label cannot be empty")
-
 
 
 @app.get("/predictions/label/{label}")
 def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
-    """
-    Return all prediction sessions that contain at least one detected object
-    with the given label
-    """
     if label.strip() == "":
         raise HTTPException(status_code=400, detail="Label cannot be empty")
 
@@ -194,7 +170,6 @@ def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
     )
 
     sessions = {}
-
     for row in rows:
         uid = row.uid
         if uid not in sessions:
@@ -215,13 +190,8 @@ def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
     return list(sessions.values())
 
 
-# when getting get request we run this function and we return all the objects that have a score greater than or equal to the min_score
 @app.get("/predictions/score/{min_score}")
 def get_predictions_by_score(min_score: float, db: Session = Depends(get_db)):
-    """
-    Return all detection objects with confidence score greater than
-    or equal to min_score
-    """
     if not 0.0 <= min_score <= 1.0:
         raise HTTPException(
             status_code=400,
@@ -246,20 +216,19 @@ def get_predictions_by_score(min_score: float, db: Session = Depends(get_db)):
         for obj in objects
     ]
 
+
 is_shutting_down = False
+
+
 @app.get("/health2")
 def health2():
-    """
-    Health check endpoint
-    """
     return {"status": "ok"}
-# health endpoint checks if the service is running and returns a simple JSON response with status "ok" 200.
+
+
 @app.get("/health")
 def health():
-    """
-    Health check endpoint
-    """
     return {"status": "ok"}
+
 
 @app.get("/ready")
 def ready():
@@ -267,8 +236,8 @@ def ready():
         raise HTTPException(status_code=503, detail="Service is shutting down")
     return {"status": "ready"}
 
+
 if __name__ == "__main__":  # pragma: no cover
-    #  uvicorn is a server for running fastapi applications.
     import uvicorn
 
     def handle_sigterm(signum, frame):
