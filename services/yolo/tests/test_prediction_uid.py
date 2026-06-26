@@ -12,7 +12,7 @@
 #   - The image-download test writes a real file to tmp_path so FileResponse has
 #     something to serve.
 
-from app import save_detection_object, save_prediction_session
+from tests.conftest import save_detection_object, save_prediction_session
 
 
 def test_get_prediction_by_uid_returns_prediction(client):
