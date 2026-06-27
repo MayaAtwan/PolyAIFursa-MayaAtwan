@@ -37,7 +37,7 @@ ALLOWED_MODELS = {
 }
 
 llm_rate_limiter = InMemoryRateLimiter(
-    requests_per_second=0.5,  # 30 requests per minute
+    requests_per_second=0.1,  # 30 requests per minute
     check_every_n_seconds=0.1,
     max_bucket_size=5,
 )
