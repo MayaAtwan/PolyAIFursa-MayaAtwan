@@ -6,7 +6,7 @@ import os
 import time
 from contextvars import ContextVar
 from typing import Optional
-
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -25,6 +25,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from pydantic import BaseModel
 
+
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
 
@@ -34,6 +35,12 @@ ALLOWED_MODELS = {
     "anthropic:claude-haiku-4-5",
     "google_genai:gemini-1.5-flash",
 }
+
+llm_rate_limiter = InMemoryRateLimiter(
+    requests_per_second=0.5,  # 30 requests per minute
+    check_every_n_seconds=0.1,
+    max_bucket_size=5,
+)
 
 if MODEL not in ALLOWED_MODELS:
     allowed_list = "\n  ".join(sorted(ALLOWED_MODELS))
@@ -103,9 +110,8 @@ TOOLS = {
     get_annotated_image.name: get_annotated_image,
 }
 
-llm = init_chat_model(MODEL, temperature=0)
+llm = init_chat_model(MODEL, temperature=0, rate_limiter=llm_rate_limiter)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
-
 def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     Simple ReAct loop:
