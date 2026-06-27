@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Request
+from fastapi.responses import FileResponse, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 from ultralytics import YOLO
 from PIL import Image
@@ -24,6 +27,16 @@ import torch
 torch.cuda.is_available = lambda: False
 
 app = FastAPI()
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
+    )
 
 Instrumentator().instrument(app).expose(app)
 
@@ -63,7 +76,8 @@ class PredictResponse(BaseModel):
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def predict(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
     ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
     ext = os.path.splitext(file.filename)[1].lower()
@@ -112,7 +126,8 @@ def predict(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
 
 @app.get("/prediction/{uid}")
-def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_prediction_by_uid(request: Request, uid: str, db: Session = Depends(get_db)):
     session = db.query(PredictionSession).filter(PredictionSession.uid == uid).first()
     if not session:
         raise HTTPException(status_code=404, detail="Prediction not found")
@@ -137,7 +152,8 @@ def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
 
 
 @app.get("/prediction/{uid}/image")
-def get_prediction_image(uid: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_prediction_image(request: Request, uid: str, db: Session = Depends(get_db)):
     session = db.query(PredictionSession).filter(PredictionSession.uid == uid).first()
     if not session or not os.path.exists(session.predicted_image):
         raise HTTPException(status_code=404, detail="Image not found")
@@ -150,7 +166,8 @@ def get_predictions_by_empty_label():
 
 
 @app.get("/predictions/label/{label}")
-def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_predictions_by_label(request: Request, label: str, db: Session = Depends(get_db)):
     if label.strip() == "":
         raise HTTPException(status_code=400, detail="Label cannot be empty")
 
@@ -191,7 +208,8 @@ def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
 
 
 @app.get("/predictions/score/{min_score}")
-def get_predictions_by_score(min_score: float, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_predictions_by_score(request: Request, min_score: float, db: Session = Depends(get_db)):
     if not 0.0 <= min_score <= 1.0:
         raise HTTPException(
             status_code=400,

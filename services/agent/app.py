@@ -20,8 +20,12 @@ logging.getLogger("langchain_core").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
@@ -187,6 +191,16 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
 
 app = FastAPI(title="Vision Agent")
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -217,11 +231,12 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+@limiter.limit("10/minute")
+def chat(request: Request, request_body: ChatRequest):
     lc_messages = []
     latest_image = None
 
-    for msg in request.messages:
+    for msg in request_body.messages:
         if msg.role == "user":
             if msg.image_base64:
                 latest_image = msg.image_base64
