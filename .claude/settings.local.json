@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\maya_atwan\\\\PolyAIFursa-MayaAtwan\\\\services\\\\frontend\\\\app\")"
+    ]
+  }
+}

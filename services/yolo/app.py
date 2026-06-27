@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from pydantic import BaseModel
 from ultralytics import YOLO
 from PIL import Image
@@ -22,6 +25,16 @@ import torch
 torch.cuda.is_available = lambda: False
 
 app = FastAPI()
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
+    )
 
 # Expose /metrics endpoint with default process metrics + FastAPI HTTP metrics
 Instrumentator().instrument(app).expose(app)
@@ -117,7 +130,8 @@ def save_detection_object(prediction_uid, label, score, box):
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(file: UploadFile = File(...)):
+@limiter.limit("10/minute")
+def predict(request: Request, file: UploadFile = File(...)):
     """
     Predict objects in an image
     """
@@ -164,7 +178,8 @@ def predict(file: UploadFile = File(...)):
     )
 
 @app.get("/prediction/{uid}")
-def get_prediction_by_uid(uid: str):
+@limiter.limit("60/minute")
+def get_prediction_by_uid(request: Request, uid: str):
     """
     Get prediction session by uid with all detected objects
     """
@@ -199,7 +214,8 @@ def get_prediction_by_uid(uid: str):
 
 
 @app.get("/prediction/{uid}/image")
-def get_prediction_image(uid: str):
+@limiter.limit("60/minute")
+def get_prediction_image(request: Request, uid: str):
     """
     Return the annotated (bounding-box) image for a prediction
     """
@@ -223,7 +239,8 @@ def get_predictions_by_empty_label():
 
 
 @app.get("/predictions/label/{label}")
-def get_predictions_by_label(label: str):
+@limiter.limit("60/minute")
+def get_predictions_by_label(request: Request, label: str):
     """
     Return all prediction sessions that contain at least one detected object
     with the given label
@@ -280,7 +297,8 @@ def get_predictions_by_label(label: str):
 
 # when getting get request we run this function and we return all the objects that have a score greater than or equal to the min_score
 @app.get("/predictions/score/{min_score}") # we use the url path
-def get_predictions_by_score(min_score: float): #  if the user sends string instead of float it will return 422 Unprocessable Entity error because FastAPI will try to convert the path parameter to float and fail if it's not a valid float
+@limiter.limit("60/minute")
+def get_predictions_by_score(request: Request, min_score: float): #  if the user sends string instead of float it will return 422 Unprocessable Entity error because FastAPI will try to convert the path parameter to float and fail if it's not a valid float
     """
     Return all detection objects with confidence score greater than
     or equal to min_score
