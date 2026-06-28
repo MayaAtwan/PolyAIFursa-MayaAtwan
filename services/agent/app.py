@@ -27,12 +27,20 @@ from pydantic import BaseModel
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # Text-only models
 ALLOWED_MODELS = {
     "openai:gpt-5.4-mini",
     "anthropic:claude-haiku-4-5",
     "google_genai:gemini-1.5-flash",
+    # AWS Bedrock (via Converse API — supports tool calling)
+    "bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0",
+    "bedrock_converse:amazon.nova-micro-v1:0",
+    "bedrock_converse:amazon.nova-lite-v1:0",
+    "bedrock_converse:openai.gpt-oss-20b-1:0",
+    "bedrock_converse:meta.llama3-1-8b-instruct-v1:0",
+    "bedrock_converse:mistral.mistral-7b-instruct-v0:2",
 }
 
 if MODEL not in ALLOWED_MODELS:
@@ -103,7 +111,11 @@ TOOLS = {
     get_annotated_image.name: get_annotated_image,
 }
 
-llm = init_chat_model(MODEL, temperature=0)
+# region_name is a Bedrock-only kwarg; other providers reject it, so add it conditionally.
+init_kwargs = {"temperature": 0}
+if MODEL.startswith("bedrock"):
+    init_kwargs["region_name"] = AWS_REGION
+llm = init_chat_model(MODEL, **init_kwargs)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
 
 def run_agent(history: list, max_iterations: int = 10) -> dict:
