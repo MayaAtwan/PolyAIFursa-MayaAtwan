@@ -34,12 +34,20 @@ from pydantic import BaseModel
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 # Text-only models
 ALLOWED_MODELS = {
     "openai:gpt-5.4-mini",
     "anthropic:claude-haiku-4-5",
     "google_genai:gemini-1.5-flash",
+    # AWS Bedrock (via Converse API — supports tool calling)
+    "bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0",
+    "bedrock_converse:amazon.nova-micro-v1:0",
+    "bedrock_converse:amazon.nova-lite-v1:0",
+    "bedrock_converse:openai.gpt-oss-20b-1:0",
+    "bedrock_converse:meta.llama3-1-8b-instruct-v1:0",
+    "bedrock_converse:mistral.mistral-7b-instruct-v0:2",
 }
 
 llm_rate_limiter = InMemoryRateLimiter(
@@ -116,11 +124,24 @@ TOOLS = {
     get_annotated_image.name: get_annotated_image,
 }
 
-llm = init_chat_model(MODEL, temperature=0, rate_limiter=llm_rate_limiter)
+# region_name is a Bedrock-only kwarg; other providers reject it, so add it conditionally.
+init_kwargs = {"temperature": 0, "rate_limiter": llm_rate_limiter}
+if MODEL.startswith("bedrock"):
+    init_kwargs["region_name"] = AWS_REGION
+llm = init_chat_model(MODEL, **init_kwargs)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
 
 _profile = llm.profile
-if not _profile.get("tool_calling"):
+# Some providers (e.g. langchain-aws / Bedrock) don't publish a capability profile,
+# so it comes back empty. Only enforce the tool-calling guard when the profile actually
+# reports capabilities; otherwise we can't determine support and just warn.
+if not _profile:
+    logger.warning(
+        "Model '%s' has no capability profile; skipping tool-calling check. "
+        "Ensure the selected model supports tool calling.",
+        MODEL,
+    )
+elif not _profile.get("tool_calling"):
     raise SystemExit(
         f"\n[ERROR] Model '{MODEL}' does not support tool calling according to its profile.\n"
         "This agent requires tool calling. Choose a model with tool_calling=True.\n"
