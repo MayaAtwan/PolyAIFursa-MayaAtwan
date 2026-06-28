@@ -1,9 +1,9 @@
 import base64
-import io
 import json
 import logging
 import os
 import time
+import uuid
 from contextvars import ContextVar
 from typing import Optional
 from langchain_core.rate_limiters import InMemoryRateLimiter
@@ -31,10 +31,18 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from pydantic import BaseModel
 
+from s3_utils import AWS_S3_BUCKET, upload_bytes
+
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+if not AWS_S3_BUCKET:
+    logger.warning(
+        "AWS_S3_BUCKET is not set; image uploads to S3 will fail. "
+        "Set AWS_S3_BUCKET (and AWS_REGION) in the environment."
+    )
 
 # Text-only models
 ALLOWED_MODELS = {
@@ -72,6 +80,7 @@ SYSTEM_PROMPT = (
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
+_current_chat_id: ContextVar[Optional[str]] = ContextVar("current_chat_id", default=None)
 # Holds a mutable dict so the tool can write back through LangChain's context copy boundary.
 # LangChain's invoke() uses copy_context().run(), which isolates ContextVar *assignments*
 # but not mutations to objects already referenced by the var.
@@ -85,10 +94,19 @@ def detect_objects() -> str:
         return json.dumps({"error": "No image was provided by the user."})
 
     image_bytes = base64.b64decode(image_b64)
+
+    # Upload the original image to S3, organised per chat:
+    #   <chat_id>/<prediction_id>/original/<image_name>
+    # Then hand YOLO only the object key — not the image bytes.
+    chat_id = _current_chat_id.get() or str(uuid.uuid4())
+    prediction_id = str(uuid.uuid4())
+    image_s3_key = f"{chat_id}/{prediction_id}/original/image.jpg"
+    upload_bytes(image_bytes, image_s3_key)
+
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
             f"{YOLO_SERVICE_URL}/predict",
-            files={"file": ("image.jpg", io.BytesIO(image_bytes), "image/jpeg")},
+            json={"image_s3_key": image_s3_key},
         )
         response.raise_for_status()
         result = response.json()
@@ -238,6 +256,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]         # full conversation thread, oldest first
+    chat_id: Optional[str] = None       # groups S3 objects per chat; generated if absent
 
 
 class ChatResponse(BaseModel):
@@ -268,8 +287,11 @@ def chat(request: Request, request_body: ChatRequest):
         else:
             lc_messages.append(AIMessage(content=msg.content))
 
+    chat_id = request_body.chat_id or str(uuid.uuid4())
+
     result_store: dict = {}
     image_token = _current_image_b64.set(latest_image)
+    chat_id_token = _current_chat_id.set(chat_id)
     store_token = _result_store.set(result_store)
     try:
         start = time.time()
@@ -287,6 +309,7 @@ def chat(request: Request, request_body: ChatRequest):
         )
     finally:
         _current_image_b64.reset(image_token)
+        _current_chat_id.reset(chat_id_token)
         _result_store.reset(store_token)
 
 

@@ -3,13 +3,13 @@
 # What we check:
 #   - Fetching a session by uid returns the full record with nested detection objects.
 #   - Fetching a non-existent uid returns 404.
-#   - Fetching the annotated image returns the correct file bytes.
-#   - Fetching an image when the uid is missing or the file was deleted returns 404.
+#   - Fetching the annotated image returns the correct bytes (from the fake S3 store).
+#   - Fetching an image when the uid is missing, or the object is absent from S3,
+#     returns 404.
 #
 # How we test it:
-#   - Rows are inserted directly via save_prediction_session / save_detection_object
-#     (no HTTP round-trip needed for setup).
-#   - The image-download test writes a real file to tmp_path so FileResponse has
+#   - Rows are inserted directly via the ORM seed helpers (no HTTP round-trip needed).
+#   - The image-download test seeds the fake S3 store (s3_store) so the endpoint has
 #     something to serve.
 
 from tests.conftest import save_detection_object, save_prediction_session
@@ -47,14 +47,14 @@ def test_get_prediction_by_uid_returns_404_when_not_found(client):
     assert response.json() == {"detail": "Prediction not found"}
 
 
-def test_get_prediction_image_returns_file(client, tmp_path):
-    predicted_image = tmp_path / "predicted.jpg"
-    predicted_image.write_bytes(b"fake image content")
+def test_get_prediction_image_returns_file(client, s3_store):
+    predicted_key = "chat-x/pred-x/predicted/img-123.jpg"
+    s3_store[predicted_key] = b"fake image content"
 
     save_prediction_session(
         "img-123",
-        "uploads/original/img-123.jpg",
-        str(predicted_image),
+        "chat-x/pred-x/original/img-123.jpg",
+        predicted_key,
     )
 
     response = client.get("/prediction/img-123/image")
@@ -70,11 +70,12 @@ def test_get_prediction_image_returns_404_when_uid_not_found(client):
     assert response.json() == {"detail": "Image not found"}
 
 
-def test_get_prediction_image_returns_404_when_file_missing(client):
+def test_get_prediction_image_returns_404_when_object_missing(client):
+    # Session exists but its predicted object was never uploaded to S3.
     save_prediction_session(
         "missing-file",
-        "uploads/original/missing-file.jpg",
-        "uploads/predicted/missing-file.jpg",
+        "chat-y/pred-y/original/missing-file.jpg",
+        "chat-y/pred-y/predicted/missing-file.jpg",
     )
 
     response = client.get("/prediction/missing-file/image")

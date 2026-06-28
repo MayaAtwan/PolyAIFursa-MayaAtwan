@@ -43,7 +43,7 @@ class _FakeHTTPClient:
     def __exit__(self, *exc):
         return False
 
-    def post(self, url, files=None):
+    def post(self, url, json=None, files=None):
         return _FakeHTTPResponse(self._json)
 
 
@@ -75,9 +75,10 @@ def test_executes_tool_then_responds(agent_app, monkeypatch):
             AIMessage(content="I see a person."),
         ],
     )
-    # Provide an image so detect_objects proceeds, and stub the YOLO HTTP call.
+    # Provide an image so detect_objects proceeds, and stub the S3 upload + YOLO HTTP call.
     agent_app._current_image_b64.set(base64.b64encode(b"img").decode())
     agent_app._result_store.set({})
+    monkeypatch.setattr(agent_app, "upload_bytes", lambda *a, **k: None)
     monkeypatch.setattr(
         agent_app.httpx, "Client", lambda *a, **k: _FakeHTTPClient({"uid": "abc-123", "detection_objects": []})
     )
