@@ -5,6 +5,7 @@ FakeMessagesListChatModel, which returns predefined AIMessages (preserving
 tool_calls and usage_metadata). No real LLM or YOLO service is contacted.
 """
 import base64
+from unittest.mock import MagicMock
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -19,7 +20,7 @@ def _set_llm(agent_app, monkeypatch, responses):
     monkeypatch.setattr(agent_app, "llm_with_tools", FakeMessagesListChatModel(responses=responses))
 
 
-# ── Fake YOLO HTTP client (for the detect_objects tool) ────────────────────────
+# ── Fake YOLO HTTP response (for the detect_objects tool) ─────────────────────
 
 class _FakeHTTPResponse:
     def __init__(self, json_body):
@@ -31,20 +32,6 @@ class _FakeHTTPResponse:
 
     def json(self):
         return self._json
-
-
-class _FakeHTTPClient:
-    def __init__(self, json_body):
-        self._json = json_body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def post(self, url, files=None):
-        return _FakeHTTPResponse(self._json)
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
@@ -73,9 +60,9 @@ def test_executes_tool_then_responds(agent_app, monkeypatch):
     # Provide an image so detect_objects proceeds, and stub the YOLO HTTP call.
     agent_app._current_image_b64.set(base64.b64encode(b"img").decode())
     agent_app._result_store.set({})
-    monkeypatch.setattr(
-        agent_app.httpx, "Client", lambda *a, **k: _FakeHTTPClient({"uid": "abc-123", "detection_objects": []})
-    )
+    fake_client = MagicMock()
+    fake_client.__enter__.return_value.post.return_value = _FakeHTTPResponse({"uid": "abc-123", "detection_objects": []})
+    monkeypatch.setattr(agent_app.httpx, "Client", MagicMock(return_value=fake_client))
 
     result = agent_app.run_agent([HumanMessage(content="what is in this image")])
 
