@@ -6,7 +6,7 @@ import os
 import time
 from contextvars import ContextVar
 from typing import Optional
-
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -17,13 +17,20 @@ logging.basicConfig(
 logging.getLogger("langchain").setLevel(logging.DEBUG)
 logging.getLogger("langchain_core").setLevel(logging.DEBUG)
 
+logger = logging.getLogger(__name__)
+
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel
+
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
@@ -34,6 +41,12 @@ ALLOWED_MODELS = {
     "anthropic:claude-haiku-4-5",
     "google_genai:gemini-1.5-flash",
 }
+
+llm_rate_limiter = InMemoryRateLimiter(
+    requests_per_second=0.1,  # 30 requests per minute
+    check_every_n_seconds=0.1,
+    max_bucket_size=5,
+)
 
 if MODEL not in ALLOWED_MODELS:
     allowed_list = "\n  ".join(sorted(ALLOWED_MODELS))
@@ -103,8 +116,18 @@ TOOLS = {
     get_annotated_image.name: get_annotated_image,
 }
 
-llm = init_chat_model(MODEL, temperature=0)
+llm = init_chat_model(MODEL, temperature=0, rate_limiter=llm_rate_limiter)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
+
+_profile = llm.profile
+if not _profile.get("tool_calling"):
+    raise SystemExit(
+        f"\n[ERROR] Model '{MODEL}' does not support tool calling according to its profile.\n"
+        "This agent requires tool calling. Choose a model with tool_calling=True.\n"
+    )
+_max_input_tokens: int = _profile.get("max_input_tokens", 0)
+logger.info("Model profile loaded: model=%s, max_input_tokens=%s", MODEL, _max_input_tokens)
+
 
 def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
@@ -116,9 +139,23 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + history
     tools_called: list[str] = []
+    input_tokens_total: int = 0
+    output_tokens_total: int = 0
 
     for iteration in range(1, max_iterations + 1):
         response: AIMessage = llm_with_tools.invoke(messages)
+
+        usage = response.usage_metadata or {}
+        input_tokens_total += usage.get("input_tokens", 0)
+        output_tokens_total += usage.get("output_tokens", 0)
+
+        if _max_input_tokens > 0 and input_tokens_total >= 0.9 * _max_input_tokens:
+            logger.warning(
+                "Approaching context limit: cumulative input_tokens=%d >= 90%% of max_input_tokens=%d",
+                input_tokens_total,
+                _max_input_tokens,
+            )
+
         messages.append(response)
 
         if not response.tool_calls:
@@ -127,6 +164,11 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
                 "iterations": iteration,
                 "tools_called": tools_called,
                 "context_limit_exceeded": False,
+                "tokens_used": {
+                    "input": input_tokens_total,
+                    "output": output_tokens_total,
+                    "total": input_tokens_total + output_tokens_total,
+                },
             }
 
         for tool_call in response.tool_calls:
@@ -139,10 +181,25 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
         "iterations": max_iterations,
         "tools_called": tools_called,
         "context_limit_exceeded": True,
+        "tokens_used": {
+            "input": input_tokens_total,
+            "output": output_tokens_total,
+            "total": input_tokens_total + output_tokens_total,
+        },
     }
 
 
 app = FastAPI(title="Vision Agent")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -170,14 +227,16 @@ class ChatResponse(BaseModel):
     iterations: int
     tools_called: list[str]
     context_limit_exceeded: bool
+    tokens_used: dict  # {"input": N, "output": N, "total": N}
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+@limiter.limit("10/minute")
+def chat(request: Request, request_body: ChatRequest):
     lc_messages = []
     latest_image = None
 
-    for msg in request.messages:
+    for msg in request_body.messages:
         if msg.role == "user":
             if msg.image_base64:
                 latest_image = msg.image_base64
@@ -203,6 +262,7 @@ def chat(request: ChatRequest):
             iterations=agent_result["iterations"],
             tools_called=agent_result["tools_called"],
             context_limit_exceeded=agent_result["context_limit_exceeded"],
+            tokens_used=agent_result["tokens_used"],
         )
     finally:
         _current_image_b64.reset(image_token)
