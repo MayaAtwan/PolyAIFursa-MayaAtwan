@@ -37,7 +37,11 @@ class _FakeHTTPResponse:
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
 def test_no_tool_calls(agent_app, monkeypatch):
-    _set_llm(agent_app, monkeypatch, [AIMessage(content="Hello")])
+    _set_llm(
+        agent_app,
+        monkeypatch,
+        [AIMessage(content="Hello", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})],
+    )
 
     result = agent_app.run_agent([HumanMessage(content="hi")])
 
@@ -45,6 +49,7 @@ def test_no_tool_calls(agent_app, monkeypatch):
     assert result["iterations"] == 1
     assert result["tools_called"] == []
     assert result["context_limit_exceeded"] is False
+    assert result["tokens_used"] == {"input": 10, "output": 5, "total": 15}
 
 
 def test_executes_tool_then_responds(agent_app, monkeypatch):
@@ -57,9 +62,10 @@ def test_executes_tool_then_responds(agent_app, monkeypatch):
             AIMessage(content="I see a person."),
         ],
     )
-    # Provide an image so detect_objects proceeds, and stub the YOLO HTTP call.
+    # Provide an image so detect_objects proceeds, and stub the S3 upload + YOLO HTTP call.
     agent_app._current_image_b64.set(base64.b64encode(b"img").decode())
     agent_app._result_store.set({})
+    monkeypatch.setattr(agent_app, "upload_bytes", lambda *a, **k: None)
     fake_client = MagicMock()
     fake_client.__enter__.return_value.post.return_value = _FakeHTTPResponse({"uid": "abc-123", "detection_objects": []})
     monkeypatch.setattr(agent_app.httpx, "Client", MagicMock(return_value=fake_client))
@@ -138,3 +144,21 @@ def test_two_tool_calls_in_one_turn(agent_app, monkeypatch):
     assert result["tools_called"] == ["detect_objects", "get_annotated_image"]
     assert result["iterations"] == 2
     assert result["response"] == "done"
+
+
+def test_token_accounting(agent_app, monkeypatch):
+    """Token usage is summed across every LLM call in the loop."""
+    _set_llm(
+        agent_app,
+        monkeypatch,
+        [
+            AIMessage(content="", tool_calls=[_tool_call()], usage_metadata={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}),
+            AIMessage(content="done", usage_metadata={"input_tokens": 20, "output_tokens": 6, "total_tokens": 26}),
+        ],
+    )
+    agent_app._current_image_b64.set(None)  # no-image path -> no HTTP
+    agent_app._result_store.set({})
+
+    result = agent_app.run_agent([HumanMessage(content="hi")])
+
+    assert result["tokens_used"] == {"input": 30, "output": 10, "total": 40}

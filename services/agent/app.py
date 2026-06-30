@@ -153,7 +153,16 @@ llm = init_chat_model(MODEL, **init_kwargs)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
 
 _profile = llm.profile
-if not _profile.get("tool_calling"):
+# Some providers (e.g. langchain-aws / Bedrock) don't publish a capability profile,
+# so it comes back empty. Only enforce the tool-calling guard when the profile actually
+# reports capabilities; otherwise we can't determine support and just warn.
+if not _profile:
+    logger.warning(
+        "Model '%s' has no capability profile; skipping tool-calling check. "
+        "Ensure the selected model supports tool calling.",
+        MODEL,
+    )
+elif not _profile.get("tool_calling"):
     raise SystemExit(
         f"\n[ERROR] Model '{MODEL}' does not support tool calling according to its profile.\n"
         "This agent requires tool calling. Choose a model with tool_calling=True.\n"

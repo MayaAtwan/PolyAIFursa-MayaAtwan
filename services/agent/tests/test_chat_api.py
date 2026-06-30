@@ -11,7 +11,7 @@ def _fixed_agent_result(**overrides):
         "iterations": 2,
         "tools_called": ["detect_objects"],
         "context_limit_exceeded": False,
-        "tokens_used": {"input": 10, "output": 5, "total": 15},
+        "tokens_used": {"input": 100, "output": 20, "total": 120},
     }
     result.update(overrides)
     return result
@@ -34,6 +34,7 @@ def test_chat_returns_agent_result(client, agent_app, monkeypatch):
     assert body["iterations"] == 2
     assert body["tools_called"] == ["detect_objects"]
     assert body["context_limit_exceeded"] is False
+    assert body["tokens_used"] == {"input": 100, "output": 20, "total": 120}
     assert isinstance(body["agent_loop_time_s"], (int, float))
 
 
@@ -43,17 +44,18 @@ def test_chat_populates_prediction_and_image(client, agent_app, monkeypatch):
     def fake_run_agent(history):
         store = agent_app._result_store.get()
         store["prediction_uid"] = "abc-123"
-        store["annotated_image_b64"] = "ZmFrZS1pbWFnZQ=="
+        store["annotated_image_key"] = "chat/uid/annotated/image.png"
         return _fixed_agent_result()
 
     monkeypatch.setattr(agent_app, "run_agent", fake_run_agent)
+    monkeypatch.setattr(agent_app, "generate_presigned_url", lambda key: "https://fake-presigned.url")
 
     response = client.post("/chat", json={"messages": [{"role": "user", "content": "Annotate it"}]})
 
     assert response.status_code == 200
     body = response.json()
     assert body["prediction_id"] == "abc-123"
-    assert body["annotated_image"] == "ZmFrZS1pbWFnZQ=="
+    assert body["annotated_image_url"] == "https://fake-presigned.url"
 
 
 def test_chat_image_message(client, agent_app, monkeypatch):
