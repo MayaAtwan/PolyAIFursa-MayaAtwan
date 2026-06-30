@@ -11,6 +11,7 @@ def _fixed_agent_result(**overrides):
         "iterations": 2,
         "tools_called": ["detect_objects"],
         "context_limit_exceeded": False,
+        "tokens_used": {"input": 10, "output": 5, "total": 15},
     }
     result.update(overrides)
     return result
