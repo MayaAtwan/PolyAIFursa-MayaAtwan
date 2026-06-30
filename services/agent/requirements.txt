@@ -11,3 +11,4 @@ langchain[google-genai]
 
 httpx
 pydantic
+slowapi>=0.1.9
