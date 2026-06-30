@@ -44,17 +44,18 @@ def test_chat_populates_prediction_and_image(client, agent_app, monkeypatch):
     def fake_run_agent(history):
         store = agent_app._result_store.get()
         store["prediction_uid"] = "abc-123"
-        store["annotated_image_b64"] = "ZmFrZS1pbWFnZQ=="
+        store["annotated_image_key"] = "chat/uid/annotated/image.png"
         return _fixed_agent_result()
 
     monkeypatch.setattr(agent_app, "run_agent", fake_run_agent)
+    monkeypatch.setattr(agent_app, "generate_presigned_url", lambda key: "https://fake-presigned.url")
 
     response = client.post("/chat", json={"messages": [{"role": "user", "content": "Annotate it"}]})
 
     assert response.status_code == 200
     body = response.json()
     assert body["prediction_id"] == "abc-123"
-    assert body["annotated_image"] == "ZmFrZS1pbWFnZQ=="
+    assert body["annotated_image_url"] == "https://fake-presigned.url"
 
 
 def test_chat_image_message(client, agent_app, monkeypatch):

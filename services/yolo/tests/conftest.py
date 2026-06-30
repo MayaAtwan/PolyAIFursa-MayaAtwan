@@ -20,6 +20,7 @@ from models import Base, PredictionSession, DetectionObjectModel
 
 
 # ── Fake YOLO model ───────────────────────────────────────────────────────────
+# Replaces the real model so tests never download weights or run inference.
 
 class FakeValue:
     def __init__(self, v):

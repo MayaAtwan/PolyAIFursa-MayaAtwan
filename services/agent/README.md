@@ -47,9 +47,9 @@ cp .env.example .env
 | `OPENAI_API_KEY` | - | Required for OpenAI models |
 | `ANTHROPIC_API_KEY` | - | Required for Anthropic models |
 | `GOOGLE_API_KEY` | - | Required for Google models |
-| `AWS_REGION` | `us-east-1` | Region for AWS Bedrock models and the S3 bucket |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | - | AWS credentials for Bedrock + S3 (or use a shared profile / instance role) |
+| `AWS_REGION` | `us-east-1` | AWS region for S3 bucket and Bedrock models |
 | `AWS_S3_BUCKET` | - | S3 bucket used to hand images to YOLO (e.g. `maya-polyai-images`) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | - | AWS credentials (or use a shared profile / instance role) |
 | `MODEL` | `claude-sonnet-4-6` | Any model string supported by `init_chat_model` |
 | `YOLO_SERVICE_URL` | `http://localhost:8080` | URL of the YOLO microservice |
 

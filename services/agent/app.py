@@ -7,6 +7,7 @@ import uuid
 from contextvars import ContextVar
 from typing import Optional
 from langchain_core.rate_limiters import InMemoryRateLimiter
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -31,8 +32,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from pydantic import BaseModel
 
-from s3_utils import AWS_S3_BUCKET, upload_bytes
-
+from s3_utils import AWS_S3_BUCKET, upload_bytes, generate_presigned_url
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
@@ -127,11 +127,14 @@ def get_annotated_image() -> str:
     if not uid:
         return json.dumps({"error": "No detection has been run yet. Use detect_objects first."})
 
+    chat_id = _current_chat_id.get() or str(uuid.uuid4())
     with httpx.Client(timeout=30.0) as client:
         img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
         if img_response.status_code == 200:
+            annotated_s3_key = f"{chat_id}/{uid}/annotated/image.png"
+            upload_bytes(img_response.content, annotated_s3_key, content_type="image/png")
             if store is not None:
-                store["annotated_image_b64"] = base64.b64encode(img_response.content).decode()
+                store["annotated_image_key"] = annotated_s3_key
             return json.dumps({"success": True})
         return json.dumps({"error": f"Could not retrieve image (status {img_response.status_code})"})
 
@@ -262,7 +265,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     prediction_id: Optional[str] = None
-    annotated_image: Optional[str] = None
+    annotated_image_url: Optional[str] = None
     agent_loop_time_s: float
     iterations: int
     tools_called: list[str]
@@ -297,10 +300,12 @@ def chat(request: Request, request_body: ChatRequest):
         start = time.time()
         agent_result = run_agent(lc_messages)
         elapsed = round(time.time() - start, 2)
+        annotated_key = result_store.get("annotated_image_key")
+        annotated_url = generate_presigned_url(annotated_key) if annotated_key else None
         return ChatResponse(
             response=agent_result["response"],
             prediction_id=result_store.get("prediction_uid"),
-            annotated_image=result_store.get("annotated_image_b64"),
+            annotated_image_url=annotated_url,
             agent_loop_time_s=elapsed,
             iterations=agent_result["iterations"],
             tools_called=agent_result["tools_called"],

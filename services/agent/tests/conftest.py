@@ -1,12 +1,7 @@
 import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# Make the service's app.py importable (parent of this tests/ directory),
-# mirroring how the YOLO service test suite imports `app`.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # app.py does real work at import time:
 #   - exits unless MODEL is an allowed value

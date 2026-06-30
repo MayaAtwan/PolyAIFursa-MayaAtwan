@@ -20,11 +20,11 @@ psycopg2-binary>=2.9
 # AWS S3 (image hand-off between agent and yolo)
 boto3
 
-# Rate limiting
-slowapi>=0.1.9
-
 # Metrics
 prometheus-fastapi-instrumentator>=6.0.0
+
+# Rate limiting
+slowapi>=0.1.9
 
 # Testing
 pytest==7.4.0
