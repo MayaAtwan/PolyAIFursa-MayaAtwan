@@ -30,8 +30,23 @@ cp .env.example .env
 | `OPENAI_API_KEY` | - | Required for OpenAI models |
 | `ANTHROPIC_API_KEY` | - | Required for Anthropic models |
 | `GOOGLE_API_KEY` | - | Required for Google models |
+| `AWS_REGION` | `us-east-1` | Region for AWS Bedrock models |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | - | AWS credentials for Bedrock (or use a shared profile / instance role) |
 | `MODEL` | `claude-sonnet-4-6` | Any model string supported by `init_chat_model` |
 | `YOLO_SERVICE_URL` | `http://localhost:8080` | URL of the YOLO microservice |
+
+### Using AWS Bedrock
+
+Bedrock models are selected with the `bedrock_converse:` prefix (the Converse API supports tool
+calling, which the agent's YOLO tools require), e.g.
+`MODEL=bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0`. The `langchain-aws` package
+(in `requirements.txt`) provides the integration, and credentials are read from the standard AWS
+chain (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, a shared profile, or an instance role).
+
+Each model must be enabled for your account under **Model access** in the Bedrock console for the
+chosen `AWS_REGION` before it can be invoked. Tool calling works with the Claude, Amazon Nova, and
+Llama models; `mistral.mistral-7b-instruct-v0:2` has no Bedrock tool support, so the YOLO tools
+won't fire on it.
 
 ## Running
 
