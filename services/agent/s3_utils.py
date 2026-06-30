@@ -38,3 +38,14 @@ def download_bytes(key: str) -> bytes:
     if not AWS_S3_BUCKET:
         raise RuntimeError("AWS_S3_BUCKET environment variable is not set")
     return _client().get_object(Bucket=AWS_S3_BUCKET, Key=key)["Body"].read()
+
+
+def generate_presigned_url(key: str, expiry_seconds: int = 3600) -> str:
+    """Return a pre-signed GET URL for s3://AWS_S3_BUCKET/<key>."""
+    if not AWS_S3_BUCKET:
+        raise RuntimeError("AWS_S3_BUCKET environment variable is not set")
+    return _client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": AWS_S3_BUCKET, "Key": key},
+        ExpiresIn=expiry_seconds,
+    )

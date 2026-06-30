@@ -6,6 +6,7 @@ import time
 import uuid
 from contextvars import ContextVar
 from typing import Optional
+from langchain_core.rate_limiters import InMemoryRateLimiter
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -17,18 +18,25 @@ logging.basicConfig(
 logging.getLogger("langchain").setLevel(logging.DEBUG)
 logging.getLogger("langchain_core").setLevel(logging.DEBUG)
 
+logger = logging.getLogger(__name__)
+
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel
 
-from s3_utils import AWS_S3_BUCKET, upload_bytes
+from s3_utils import AWS_S3_BUCKET, upload_bytes, generate_presigned_url
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 if not AWS_S3_BUCKET:
     logging.getLogger(__name__).warning(
@@ -41,7 +49,20 @@ ALLOWED_MODELS = {
     "openai:gpt-5.4-mini",
     "anthropic:claude-haiku-4-5",
     "google_genai:gemini-1.5-flash",
+    # AWS Bedrock (via Converse API — supports tool calling)
+    "bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0",
+    "bedrock_converse:amazon.nova-micro-v1:0",
+    "bedrock_converse:amazon.nova-lite-v1:0",
+    "bedrock_converse:openai.gpt-oss-20b-1:0",
+    "bedrock_converse:meta.llama3-1-8b-instruct-v1:0",
+    "bedrock_converse:mistral.mistral-7b-instruct-v0:2",
 }
+
+llm_rate_limiter = InMemoryRateLimiter(
+    requests_per_second=0.1,  # 30 requests per minute
+    check_every_n_seconds=0.1,
+    max_bucket_size=5,
+)
 
 if MODEL not in ALLOWED_MODELS:
     allowed_list = "\n  ".join(sorted(ALLOWED_MODELS))
@@ -106,11 +127,14 @@ def get_annotated_image() -> str:
     if not uid:
         return json.dumps({"error": "No detection has been run yet. Use detect_objects first."})
 
+    chat_id = _current_chat_id.get() or str(uuid.uuid4())
     with httpx.Client(timeout=30.0) as client:
         img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
         if img_response.status_code == 200:
+            annotated_s3_key = f"{chat_id}/{uid}/annotated/image.png"
+            upload_bytes(img_response.content, annotated_s3_key, content_type="image/png")
             if store is not None:
-                store["annotated_image_b64"] = base64.b64encode(img_response.content).decode()
+                store["annotated_image_key"] = annotated_s3_key
             return json.dumps({"success": True})
         return json.dumps({"error": f"Could not retrieve image (status {img_response.status_code})"})
 
@@ -121,8 +145,22 @@ TOOLS = {
     get_annotated_image.name: get_annotated_image,
 }
 
-llm = init_chat_model(MODEL, temperature=0)
+# region_name is a Bedrock-only kwarg; other providers reject it, so add it conditionally.
+init_kwargs = {"temperature": 0, "rate_limiter": llm_rate_limiter}
+if MODEL.startswith("bedrock"):
+    init_kwargs["region_name"] = AWS_REGION
+llm = init_chat_model(MODEL, **init_kwargs)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
+
+_profile = llm.profile
+if not _profile.get("tool_calling"):
+    raise SystemExit(
+        f"\n[ERROR] Model '{MODEL}' does not support tool calling according to its profile.\n"
+        "This agent requires tool calling. Choose a model with tool_calling=True.\n"
+    )
+_max_input_tokens: int = _profile.get("max_input_tokens", 0)
+logger.info("Model profile loaded: model=%s, max_input_tokens=%s", MODEL, _max_input_tokens)
+
 
 def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
@@ -134,9 +172,23 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + history
     tools_called: list[str] = []
+    input_tokens_total: int = 0
+    output_tokens_total: int = 0
 
     for iteration in range(1, max_iterations + 1):
         response: AIMessage = llm_with_tools.invoke(messages)
+
+        usage = response.usage_metadata or {}
+        input_tokens_total += usage.get("input_tokens", 0)
+        output_tokens_total += usage.get("output_tokens", 0)
+
+        if _max_input_tokens > 0 and input_tokens_total >= 0.9 * _max_input_tokens:
+            logger.warning(
+                "Approaching context limit: cumulative input_tokens=%d >= 90%% of max_input_tokens=%d",
+                input_tokens_total,
+                _max_input_tokens,
+            )
+
         messages.append(response)
 
         if not response.tool_calls:
@@ -145,6 +197,11 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
                 "iterations": iteration,
                 "tools_called": tools_called,
                 "context_limit_exceeded": False,
+                "tokens_used": {
+                    "input": input_tokens_total,
+                    "output": output_tokens_total,
+                    "total": input_tokens_total + output_tokens_total,
+                },
             }
 
         for tool_call in response.tool_calls:
@@ -157,10 +214,25 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
         "iterations": max_iterations,
         "tools_called": tools_called,
         "context_limit_exceeded": True,
+        "tokens_used": {
+            "input": input_tokens_total,
+            "output": output_tokens_total,
+            "total": input_tokens_total + output_tokens_total,
+        },
     }
 
 
 app = FastAPI(title="Vision Agent")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -184,19 +256,21 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     prediction_id: Optional[str] = None
-    annotated_image: Optional[str] = None
+    annotated_image_url: Optional[str] = None
     agent_loop_time_s: float
     iterations: int
     tools_called: list[str]
     context_limit_exceeded: bool
+    tokens_used: dict  # {"input": N, "output": N, "total": N}
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+@limiter.limit("10/minute")
+def chat(request: Request, request_body: ChatRequest):
     lc_messages = []
     latest_image = None
 
-    for msg in request.messages:
+    for msg in request_body.messages:
         if msg.role == "user":
             if msg.image_base64:
                 latest_image = msg.image_base64
@@ -207,7 +281,7 @@ def chat(request: ChatRequest):
         else:
             lc_messages.append(AIMessage(content=msg.content))
 
-    chat_id = request.chat_id or str(uuid.uuid4())
+    chat_id = request_body.chat_id or str(uuid.uuid4())
 
     result_store: dict = {}
     image_token = _current_image_b64.set(latest_image)
@@ -217,14 +291,17 @@ def chat(request: ChatRequest):
         start = time.time()
         agent_result = run_agent(lc_messages)
         elapsed = round(time.time() - start, 2)
+        annotated_key = result_store.get("annotated_image_key")
+        annotated_url = generate_presigned_url(annotated_key) if annotated_key else None
         return ChatResponse(
             response=agent_result["response"],
             prediction_id=result_store.get("prediction_uid"),
-            annotated_image=result_store.get("annotated_image_b64"),
+            annotated_image_url=annotated_url,
             agent_loop_time_s=elapsed,
             iterations=agent_result["iterations"],
             tools_called=agent_result["tools_called"],
             context_limit_exceeded=agent_result["context_limit_exceeded"],
+            tokens_used=agent_result["tokens_used"],
         )
     finally:
         _current_image_b64.reset(image_token)

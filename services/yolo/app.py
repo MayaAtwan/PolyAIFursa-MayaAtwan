@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ultralytics import YOLO
@@ -25,6 +28,16 @@ import torch
 torch.cuda.is_available = lambda: False
 
 app = FastAPI()
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
+    )
 
 # Create tables at import time so pytest (which imports this module) has them ready.
 Base.metadata.create_all(bind=engine)
@@ -84,7 +97,8 @@ class PredictRequest(BaseModel):
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(body: PredictRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def predict(request: Request, body: PredictRequest, db: Session = Depends(get_db)):
     """
     Predict objects in an image stored in S3.
 
@@ -147,7 +161,8 @@ def predict(body: PredictRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/prediction/{uid}")
-def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_prediction_by_uid(request: Request, uid: str, db: Session = Depends(get_db)):
     """
     Get prediction session by uid with all detected objects
     """
@@ -175,7 +190,8 @@ def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
 
 
 @app.get("/prediction/{uid}/image")
-def get_prediction_image(uid: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_prediction_image(request: Request, uid: str, db: Session = Depends(get_db)):
     """
     Return the annotated (bounding-box) image for a prediction, fetched from S3.
     """
@@ -203,7 +219,8 @@ def get_predictions_by_empty_label():
 
 
 @app.get("/predictions/label/{label}")
-def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_predictions_by_label(request: Request, label: str, db: Session = Depends(get_db)):
     """
     Return all prediction sessions that contain at least one detected object
     with the given label
@@ -248,7 +265,8 @@ def get_predictions_by_label(label: str, db: Session = Depends(get_db)):
 
 
 @app.get("/predictions/score/{min_score}")
-def get_predictions_by_score(min_score: float, db: Session = Depends(get_db)):
+@limiter.limit("60/minute")
+def get_predictions_by_score(request: Request, min_score: float, db: Session = Depends(get_db)):
     """
     Return all detection objects with confidence score greater than
     or equal to min_score
