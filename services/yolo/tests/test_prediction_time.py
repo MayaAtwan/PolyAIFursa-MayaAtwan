@@ -1,17 +1,13 @@
 import os
 import unittest
-import tempfile
 from fastapi.testclient import TestClient
-import app as app_module
-from app import app, init_db
+from app import app
 
 TEST_IMAGE = os.path.join(os.path.dirname(__file__), "data", "beatles.jpeg")
 
 
 class TestPredictionTime(unittest.TestCase):
     def setUp(self):
-        _, app_module.DB_PATH = tempfile.mkstemp(suffix=".db")
-        init_db()
         self.client = TestClient(app)
 
     def test_predict_includes_processing_time(self):

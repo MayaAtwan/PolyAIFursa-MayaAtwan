@@ -17,6 +17,8 @@ logging.basicConfig(
 logging.getLogger("langchain").setLevel(logging.DEBUG)
 logging.getLogger("langchain_core").setLevel(logging.DEBUG)
 
+logger = logging.getLogger(__name__)
+
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -106,6 +108,16 @@ TOOLS = {
 llm = init_chat_model(MODEL, temperature=0)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
 
+_profile = llm.profile
+if not _profile.get("tool_calling"):
+    raise SystemExit(
+        f"\n[ERROR] Model '{MODEL}' does not support tool calling according to its profile.\n"
+        "This agent requires tool calling. Choose a model with tool_calling=True.\n"
+    )
+_max_input_tokens: int = _profile.get("max_input_tokens", 0)
+logger.info("Model profile loaded: model=%s, max_input_tokens=%s", MODEL, _max_input_tokens)
+
+
 def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     Simple ReAct loop:
@@ -116,9 +128,23 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + history
     tools_called: list[str] = []
+    input_tokens_total: int = 0
+    output_tokens_total: int = 0
 
     for iteration in range(1, max_iterations + 1):
         response: AIMessage = llm_with_tools.invoke(messages)
+
+        usage = response.usage_metadata or {}
+        input_tokens_total += usage.get("input_tokens", 0)
+        output_tokens_total += usage.get("output_tokens", 0)
+
+        if _max_input_tokens > 0 and input_tokens_total >= 0.9 * _max_input_tokens:
+            logger.warning(
+                "Approaching context limit: cumulative input_tokens=%d >= 90%% of max_input_tokens=%d",
+                input_tokens_total,
+                _max_input_tokens,
+            )
+
         messages.append(response)
 
         if not response.tool_calls:
@@ -127,6 +153,11 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
                 "iterations": iteration,
                 "tools_called": tools_called,
                 "context_limit_exceeded": False,
+                "tokens_used": {
+                    "input": input_tokens_total,
+                    "output": output_tokens_total,
+                    "total": input_tokens_total + output_tokens_total,
+                },
             }
 
         for tool_call in response.tool_calls:
@@ -139,6 +170,11 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
         "iterations": max_iterations,
         "tools_called": tools_called,
         "context_limit_exceeded": True,
+        "tokens_used": {
+            "input": input_tokens_total,
+            "output": output_tokens_total,
+            "total": input_tokens_total + output_tokens_total,
+        },
     }
 
 
@@ -170,6 +206,7 @@ class ChatResponse(BaseModel):
     iterations: int
     tools_called: list[str]
     context_limit_exceeded: bool
+    tokens_used: dict  # {"input": N, "output": N, "total": N}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -203,6 +240,7 @@ def chat(request: ChatRequest):
             iterations=agent_result["iterations"],
             tools_called=agent_result["tools_called"],
             context_limit_exceeded=agent_result["context_limit_exceeded"],
+            tokens_used=agent_result["tokens_used"],
         )
     finally:
         _current_image_b64.reset(image_token)
