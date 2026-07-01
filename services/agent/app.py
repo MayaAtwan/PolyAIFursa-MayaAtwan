@@ -46,10 +46,6 @@ if not AWS_S3_BUCKET:
 
 # Text-only models
 ALLOWED_MODELS = {
-    "openai:gpt-5.4-mini",
-    "anthropic:claude-haiku-4-5",
-    "google_genai:gemini-1.5-flash",
-    # AWS Bedrock (via Converse API — supports tool calling)
     "bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0",
     "bedrock_converse:amazon.nova-micro-v1:0",
     "bedrock_converse:amazon.nova-lite-v1:0",
@@ -171,6 +167,23 @@ _max_input_tokens: int = _profile.get("max_input_tokens", 0)
 logger.info("Model profile loaded: model=%s, max_input_tokens=%s", MODEL, _max_input_tokens)
 
 
+def message_content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and item.get("text"):
+                    parts.append(item["text"])
+                elif item.get("text"):
+                    parts.append(item["text"])
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
+
+
 def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     Simple ReAct loop:
@@ -202,7 +215,7 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
 
         if not response.tool_calls:
             return {
-                "response": response.content,
+                "response": message_content_to_text(response.content),
                 "iterations": iteration,
                 "tools_called": tools_called,
                 "context_limit_exceeded": False,
@@ -271,6 +284,7 @@ class ChatResponse(BaseModel):
     tools_called: list[str]
     context_limit_exceeded: bool
     tokens_used: dict  # {"input": N, "output": N, "total": N}
+
 
 
 @app.post("/chat", response_model=ChatResponse)
