@@ -46,10 +46,6 @@ if not AWS_S3_BUCKET:
 
 # Text-only models
 ALLOWED_MODELS = {
-    "openai:gpt-5.4-mini",
-    "anthropic:claude-haiku-4-5",
-    "google_genai:gemini-1.5-flash",
-    # AWS Bedrock (via Converse API — supports tool calling)
     "bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0",
     "bedrock_converse:amazon.nova-micro-v1:0",
     "bedrock_converse:amazon.nova-lite-v1:0",
