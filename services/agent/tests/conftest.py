@@ -8,7 +8,7 @@ import pytest
 #   - builds a real LLM client via init_chat_model() and reads llm.profile
 # Set a valid MODEL and fake init_chat_model BEFORE importing app so no real
 # LLM client (and no API key / network) is ever required.
-os.environ["MODEL"] = "anthropic:claude-haiku-4-5"
+os.environ["MODEL"] = "bedrock_converse:anthropic.claude-3-haiku-20240307-v1:0"
 
 _fake_llm = MagicMock()
 _fake_llm.profile = {"tool_calling": True, "max_input_tokens": 200000}
