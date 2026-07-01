@@ -3,12 +3,14 @@ from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
+
 class PredictionSession(Base):
     __tablename__ = "prediction_sessions"
     uid             = Column(Text, primary_key=True)
     timestamp       = Column(DateTime, server_default=func.now(), nullable=False)
     original_image  = Column(Text, nullable=False)
     predicted_image = Column(Text, nullable=False)
+
 
 class DetectionObjectModel(Base):
     __tablename__ = "detection_objects"

@@ -1,12 +1,13 @@
 import base64
-import io
 import json
 import logging
 import os
 import time
+import uuid
 from contextvars import ContextVar
 from typing import Optional
 from langchain_core.rate_limiters import InMemoryRateLimiter
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -31,10 +32,17 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from pydantic import BaseModel
 
+from s3_utils import AWS_S3_BUCKET, upload_bytes, generate_presigned_url
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MODEL = os.environ.get("MODEL")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+if not AWS_S3_BUCKET:
+    logging.getLogger(__name__).warning(
+        "AWS_S3_BUCKET is not set; image uploads to S3 will fail. "
+        "Set AWS_S3_BUCKET (and AWS_REGION) in the environment."
+    )
 
 # Text-only models
 ALLOWED_MODELS = {
@@ -72,6 +80,7 @@ SYSTEM_PROMPT = (
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
+_current_chat_id: ContextVar[Optional[str]] = ContextVar("current_chat_id", default=None)
 # Holds a mutable dict so the tool can write back through LangChain's context copy boundary.
 # LangChain's invoke() uses copy_context().run(), which isolates ContextVar *assignments*
 # but not mutations to objects already referenced by the var.
@@ -85,10 +94,19 @@ def detect_objects() -> str:
         return json.dumps({"error": "No image was provided by the user."})
 
     image_bytes = base64.b64decode(image_b64)
+
+    # Upload the original image to S3, organised per chat:
+    #   <chat_id>/<prediction_id>/original/<image_name>
+    # Then hand YOLO only the object key — not the image bytes.
+    chat_id = _current_chat_id.get() or str(uuid.uuid4())
+    prediction_id = str(uuid.uuid4())
+    image_s3_key = f"{chat_id}/{prediction_id}/original/image.jpg"
+    upload_bytes(image_bytes, image_s3_key)
+
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
             f"{YOLO_SERVICE_URL}/predict",
-            files={"file": ("image.jpg", io.BytesIO(image_bytes), "image/jpeg")},
+            json={"image_s3_key": image_s3_key},
         )
         response.raise_for_status()
         result = response.json()
@@ -109,11 +127,14 @@ def get_annotated_image() -> str:
     if not uid:
         return json.dumps({"error": "No detection has been run yet. Use detect_objects first."})
 
+    chat_id = _current_chat_id.get() or str(uuid.uuid4())
     with httpx.Client(timeout=30.0) as client:
         img_response = client.get(f"{YOLO_SERVICE_URL}/prediction/{uid}/image")
         if img_response.status_code == 200:
+            annotated_s3_key = f"{chat_id}/{uid}/annotated/image.png"
+            upload_bytes(img_response.content, annotated_s3_key, content_type="image/png")
             if store is not None:
-                store["annotated_image_b64"] = base64.b64encode(img_response.content).decode()
+                store["annotated_image_key"] = annotated_s3_key
             return json.dumps({"success": True})
         return json.dumps({"error": f"Could not retrieve image (status {img_response.status_code})"})
 
@@ -132,7 +153,16 @@ llm = init_chat_model(MODEL, **init_kwargs)
 llm_with_tools = llm.bind_tools(list(TOOLS.values()))
 
 _profile = llm.profile
-if not _profile.get("tool_calling"):
+# Some providers (e.g. langchain-aws / Bedrock) don't publish a capability profile,
+# so it comes back empty. Only enforce the tool-calling guard when the profile actually
+# reports capabilities; otherwise we can't determine support and just warn.
+if not _profile:
+    logger.warning(
+        "Model '%s' has no capability profile; skipping tool-calling check. "
+        "Ensure the selected model supports tool calling.",
+        MODEL,
+    )
+elif not _profile.get("tool_calling"):
     raise SystemExit(
         f"\n[ERROR] Model '{MODEL}' does not support tool calling according to its profile.\n"
         "This agent requires tool calling. Choose a model with tool_calling=True.\n"
@@ -229,12 +259,13 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]         # full conversation thread, oldest first
+    chat_id: Optional[str] = None       # groups S3 objects per chat; generated if absent
 
 
 class ChatResponse(BaseModel):
     response: str
     prediction_id: Optional[str] = None
-    annotated_image: Optional[str] = None
+    annotated_image_url: Optional[str] = None
     agent_loop_time_s: float
     iterations: int
     tools_called: list[str]
@@ -259,17 +290,22 @@ def chat(request: Request, request_body: ChatRequest):
         else:
             lc_messages.append(AIMessage(content=msg.content))
 
+    chat_id = request_body.chat_id or str(uuid.uuid4())
+
     result_store: dict = {}
     image_token = _current_image_b64.set(latest_image)
+    chat_id_token = _current_chat_id.set(chat_id)
     store_token = _result_store.set(result_store)
     try:
         start = time.time()
         agent_result = run_agent(lc_messages)
         elapsed = round(time.time() - start, 2)
+        annotated_key = result_store.get("annotated_image_key")
+        annotated_url = generate_presigned_url(annotated_key) if annotated_key else None
         return ChatResponse(
             response=agent_result["response"],
             prediction_id=result_store.get("prediction_uid"),
-            annotated_image=result_store.get("annotated_image_b64"),
+            annotated_image_url=annotated_url,
             agent_loop_time_s=elapsed,
             iterations=agent_result["iterations"],
             tools_called=agent_result["tools_called"],
@@ -278,6 +314,7 @@ def chat(request: Request, request_body: ChatRequest):
         )
     finally:
         _current_image_b64.reset(image_token)
+        _current_chat_id.reset(chat_id_token)
         _result_store.reset(store_token)
 
 

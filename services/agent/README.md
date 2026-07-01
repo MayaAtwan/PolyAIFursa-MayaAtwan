@@ -2,6 +2,23 @@
 
 A LangChain-powered AI vision agent with a manual ReAct loop. Accepts text and base64-encoded images, and can call tools (e.g. YOLO object detection) to answer questions.
 
+## Image flow (S3)
+
+The agent and YOLO service are decoupled via Amazon S3 — the image bytes are **not**
+sent over HTTP between them:
+
+1. The user sends an image (base64) to `POST /chat`.
+2. The agent uploads the original image to S3 under
+   `<chat_id>/<prediction_id>/original/image.jpg`.
+3. The agent calls the YOLO service with **only the S3 object key**
+   (`{"image_s3_key": "<key>"}`), not the bytes.
+4. YOLO downloads the original from S3, runs detection, uploads the annotated
+   image back to S3 under the matching `<chat_id>/<prediction_id>/predicted/...`
+   key, and returns JSON.
+
+`chat_id` may be supplied by the client in the request body; if absent the agent
+generates one per request.
+
 ## Prerequisites
 
 - Python 3.10+
@@ -30,8 +47,9 @@ cp .env.example .env
 | `OPENAI_API_KEY` | - | Required for OpenAI models |
 | `ANTHROPIC_API_KEY` | - | Required for Anthropic models |
 | `GOOGLE_API_KEY` | - | Required for Google models |
-| `AWS_REGION` | `us-east-1` | Region for AWS Bedrock models |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | - | AWS credentials for Bedrock (or use a shared profile / instance role) |
+| `AWS_REGION` | `us-east-1` | AWS region for S3 bucket and Bedrock models |
+| `AWS_S3_BUCKET` | - | S3 bucket used to hand images to YOLO (e.g. `maya-polyai-images`) |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | - | AWS credentials (or use a shared profile / instance role) |
 | `MODEL` | `claude-sonnet-4-6` | Any model string supported by `init_chat_model` |
 | `YOLO_SERVICE_URL` | `http://localhost:8080` | URL of the YOLO microservice |
 

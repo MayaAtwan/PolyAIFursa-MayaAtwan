@@ -1,4 +1,7 @@
-import io
+# pytest has a special rule: any file named conftest.py is automatically imported by
+# pytest, loaded before any test runs.
+
+import io  # in-memory (not on-disk) file object for testing image bytes
 import os
 
 import numpy as np
@@ -17,6 +20,7 @@ from models import Base, PredictionSession, DetectionObjectModel
 
 
 # ── Fake YOLO model ───────────────────────────────────────────────────────────
+# Replaces the real model so tests never download weights or run inference.
 
 class FakeValue:
     def __init__(self, v):
@@ -53,8 +57,20 @@ class FakeModel:
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+@pytest.fixture
+def s3_store():
+    """In-memory stand-in for the S3 bucket: maps object key -> bytes.
+    Tests can pre-seed predicted images here for retrieval tests."""
+    return {}
+
+
 @pytest.fixture(autouse=True)
-def setup_db_and_dirs(tmp_path, monkeypatch):
+def setup_db_and_dirs(tmp_path, monkeypatch, s3_store):
+    """
+    SETUP:    Isolated temp DB (via dependency_overrides) + upload dirs, and an
+              in-memory fake for the S3 helpers so no real bucket is touched.
+    TEARDOWN: pytest removes tmp_path automatically; we clear dependency overrides.
+    """
     test_engine = create_engine(
         f"sqlite:///{tmp_path}/test.db", connect_args={"check_same_thread": False}
     )
@@ -73,6 +89,22 @@ def setup_db_and_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "PREDICTED_DIR", str(tmp_path / "uploads/predicted"))
     os.makedirs(str(tmp_path / "uploads/original"), exist_ok=True)
     os.makedirs(str(tmp_path / "uploads/predicted"), exist_ok=True)
+
+    # Fake S3: original keys download a default JPEG; everything else must be
+    # explicitly seeded into s3_store, otherwise the download "fails" (404).
+    def fake_download(key):
+        if key in s3_store:
+            return s3_store[key]
+        if "/original/" in key:
+            return make_jpeg_bytes().getvalue()
+        raise KeyError(key)
+
+    def fake_upload(data, key, content_type="image/jpeg"):
+        s3_store[key] = data
+
+    monkeypatch.setattr(app_module, "download_bytes", fake_download)
+    monkeypatch.setattr(app_module, "upload_bytes", fake_upload)
+
     yield
     app.dependency_overrides.clear()
 
@@ -82,32 +114,7 @@ def client():
     return TestClient(app)
 
 
-@pytest.fixture
-def seeded_db():
-    """
-    Insert two prediction sessions with three detected objects into the DB.
-
-    Session abc-123: person (score 0.91) + car (score 0.50)
-    Session def-456: dog (score 0.49)
-    """
-    db: Session = next(app.dependency_overrides[get_db]())
-    db.add_all([
-        PredictionSession(uid="abc-123", original_image="uploads/original/abc-123.jpg",
-                          predicted_image="uploads/predicted/abc-123.jpg"),
-        PredictionSession(uid="def-456", original_image="uploads/original/def-456.jpg",
-                          predicted_image="uploads/predicted/def-456.jpg"),
-    ])
-    db.flush()
-    db.add_all([
-        DetectionObjectModel(prediction_uid="abc-123", label="person", score=0.91, box="[10, 20, 100, 200]"),
-        DetectionObjectModel(prediction_uid="abc-123", label="car", score=0.50, box="[1, 2, 3, 4]"),
-        DetectionObjectModel(prediction_uid="def-456", label="dog", score=0.49, box="[5, 6, 7, 8]"),
-    ])
-    db.commit()
-    db.close()
-
-
-# ── ORM seed helpers (used by test files instead of old sqlite3 helpers) ──────
+# ── ORM seed helpers (used by tests instead of the old sqlite3 helpers) ────────
 
 def save_prediction_session(uid, original_image, predicted_image):
     db: Session = next(app.dependency_overrides[get_db]())
@@ -123,8 +130,24 @@ def save_detection_object(prediction_uid, label, score, box):
     db.close()
 
 
+@pytest.fixture
+def seeded_db():
+    """
+    Insert two prediction sessions with three detected objects into the DB.
+
+    Session abc-123: person (score 0.91) + car (score 0.50)
+    Session def-456: dog (score 0.49)
+    """
+    save_prediction_session("abc-123", "uploads/original/abc-123.jpg", "uploads/predicted/abc-123.jpg")
+    save_detection_object("abc-123", "person", 0.91, [10, 20, 100, 200])
+    save_detection_object("abc-123", "car", 0.50, [1, 2, 3, 4])
+
+    save_prediction_session("def-456", "uploads/original/def-456.jpg", "uploads/predicted/def-456.jpg")
+    save_detection_object("def-456", "dog", 0.49, [5, 6, 7, 8])
+
+
 def make_jpeg_bytes():
-    """Return a minimal in-memory JPEG for upload tests."""
+    """Return a minimal in-memory JPEG for predict tests."""
     buf = io.BytesIO()
     Image.new("RGB", (20, 20), color="white").save(buf, format="JPEG")
     buf.seek(0)
