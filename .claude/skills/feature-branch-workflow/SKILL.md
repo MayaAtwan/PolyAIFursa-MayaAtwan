@@ -38,6 +38,16 @@ When a conflict occurs:
 
 Do not edit conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) yourself.
 
+## One-Time Setup
+
+Before using `gh` commands, authenticate once in WSL:
+
+```bash
+gh auth login
+```
+
+Choose: **GitHub.com → HTTPS → Login with a web browser**, copy the one-time code, open https://github.com/login/device in your browser, and paste it.
+
 ## The Workflow
 
 ### Step 1 — Stage changes
@@ -74,14 +84,18 @@ git push origin dev
 
 ### Step 4 — Wait for GitHub Actions to pass
 
-Go to the repository on GitHub → **Actions** tab.
+Run this to check the status of the latest `dev` workflow:
 
-**Wait until the workflow run triggered by the `dev` push shows a green checkmark.**
+```bash
+wsl -e gh run list --branch dev --limit 3
+```
 
-- Green ✅ → proceed to Step 5
-- Red ❌ → fix the issue on your feature branch, repeat Steps 1–4
+Read the output:
+- `completed  success` ✅ → proceed to Step 5
+- `in_progress` → wait and re-run the command
+- `completed  failure` ❌ → fix the issue on your feature branch, repeat Steps 1–4
 
-Do not open a PR until the `dev` workflow is green.
+Do not open a PR until the `dev` workflow shows `completed  success`.
 
 ### Step 5 — Push the feature branch and open PR
 
@@ -90,11 +104,13 @@ git checkout feature/your-feature-name
 git push origin feature/your-feature-name
 ```
 
-Open the PR on GitHub:
-- **Base branch:** `main`
-- **Compare branch:** `feature/your-feature-name`
-- Title: one line describing the change
-- Description: what changed and why
+Then open the PR using the `gh` CLI:
+
+```bash
+wsl -e gh pr create --title "short description of the change" --body "what changed and why" --base main --head feature/your-feature-name
+```
+
+The command will print the PR URL when done.
 
 **Stop here. Do not merge the PR yourself.** Leave it open for review. Merging into `main` is done through the PR — never via `git merge main` or a direct push.
 
@@ -111,6 +127,8 @@ Open the PR on GitHub:
 | Merge feature → dev | `git merge feature/name` |
 | Push dev | `git push origin dev` |
 | Push feature branch | `git push origin feature/name` |
+| Check Actions status | `wsl -e gh run list --branch dev --limit 3` |
+| Open PR | `wsl -e gh pr create --title "..." --body "..." --base main --head feature/name` |
 
 ## Common Mistakes
 
