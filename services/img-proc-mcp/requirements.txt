@@ -1,0 +1,6 @@
+mcp[cli]
+fastmcp
+pillow
+numpy
+pytest
+pytest-cov

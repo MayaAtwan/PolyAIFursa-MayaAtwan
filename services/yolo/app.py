@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import Response, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator

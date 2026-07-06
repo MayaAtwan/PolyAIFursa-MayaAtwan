@@ -15,6 +15,9 @@ pydantic
 boto3
 slowapi>=0.1.9
 
+langchain-mcp-adapters>=0.1.0
+pillow>=9.5.0
+
 pytest==7.4.0
 pytest-cov==4.1.0
 pytest-html==3.2.0
