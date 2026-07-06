@@ -202,14 +202,14 @@ class _FakeHTTPResponse:
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
-def test_no_tool_calls(agent_app, monkeypatch):
+async def test_no_tool_calls(agent_app, monkeypatch):
     _set_llm(
         agent_app,
         monkeypatch,
         [AIMessage(content="Hello", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})],
     )
 
-    result = agent_app.run_agent([HumanMessage(content="hi")])
+    result = await agent_app.run_agent([HumanMessage(content="hi")])
 
     assert result["response"] == "Hello"
     assert result["iterations"] == 1
@@ -218,7 +218,7 @@ def test_no_tool_calls(agent_app, monkeypatch):
     assert result["tokens_used"] == {"input": 10, "output": 5, "total": 15}
 
 
-def test_executes_tool_then_responds(agent_app, monkeypatch):
+async def test_executes_tool_then_responds(agent_app, monkeypatch):
     # First the LLM asks for a tool, then it produces a final answer.
     _set_llm(
         agent_app,
@@ -236,7 +236,7 @@ def test_executes_tool_then_responds(agent_app, monkeypatch):
     fake_client.__enter__.return_value.post.return_value = _FakeHTTPResponse({"uid": "abc-123", "detection_objects": []})
     monkeypatch.setattr(agent_app.httpx, "Client", MagicMock(return_value=fake_client))
 
-    result = agent_app.run_agent([HumanMessage(content="what is in this image")])
+    result = await agent_app.run_agent([HumanMessage(content="what is in this image")])
 
     assert result["response"] == "I see a person."
     assert result["iterations"] == 2
@@ -246,7 +246,7 @@ def test_executes_tool_then_responds(agent_app, monkeypatch):
     assert agent_app._result_store.get()["prediction_uid"] == "abc-123"
 
 
-def test_tool_with_no_image(agent_app, monkeypatch):
+async def test_tool_with_no_image(agent_app, monkeypatch):
     """When no image is set, detect_objects returns an error without any HTTP call."""
     _set_llm(
         agent_app,
@@ -265,20 +265,20 @@ def test_tool_with_no_image(agent_app, monkeypatch):
 
     monkeypatch.setattr(agent_app.httpx, "Client", _boom)
 
-    result = agent_app.run_agent([HumanMessage(content="describe it")])
+    result = await agent_app.run_agent([HumanMessage(content="describe it")])
 
     assert result["tools_called"] == ["detect_objects"]
     assert result["response"] == "No image was available."
     assert result["iterations"] == 2
 
 
-def test_max_iterations_exceeded(agent_app, monkeypatch):
+async def test_max_iterations_exceeded(agent_app, monkeypatch):
     # Every response asks for a tool, so the loop never terminates on its own.
     _set_llm(agent_app, monkeypatch, [AIMessage(content="", tool_calls=[_tool_call()])])
     agent_app._current_image_b64.set(None)  # no-image path -> no HTTP
     agent_app._result_store.set({})
 
-    result = agent_app.run_agent([HumanMessage(content="loop")], max_iterations=3)
+    result = await agent_app.run_agent([HumanMessage(content="loop")], max_iterations=3)
 
     assert result["response"] == ""
     assert result["iterations"] == 3
@@ -286,7 +286,7 @@ def test_max_iterations_exceeded(agent_app, monkeypatch):
     assert result["tools_called"] == ["detect_objects", "detect_objects", "detect_objects"]
 
 
-def test_two_tool_calls_in_one_turn(agent_app, monkeypatch):
+async def test_two_tool_calls_in_one_turn(agent_app, monkeypatch):
     """A single AIMessage may request multiple tools; all must be executed and fed back."""
     _set_llm(
         agent_app,
@@ -305,14 +305,14 @@ def test_two_tool_calls_in_one_turn(agent_app, monkeypatch):
     agent_app._current_image_b64.set(None)  # both tools short-circuit without HTTP
     agent_app._result_store.set({})
 
-    result = agent_app.run_agent([HumanMessage(content="hi")])
+    result = await agent_app.run_agent([HumanMessage(content="hi")])
 
     assert result["tools_called"] == ["detect_objects", "get_annotated_image"]
     assert result["iterations"] == 2
     assert result["response"] == "done"
 
 
-def test_token_accounting(agent_app, monkeypatch):
+async def test_token_accounting(agent_app, monkeypatch):
     """Token usage is summed across every LLM call in the loop."""
     _set_llm(
         agent_app,
@@ -325,7 +325,7 @@ def test_token_accounting(agent_app, monkeypatch):
     agent_app._current_image_b64.set(None)  # no-image path -> no HTTP
     agent_app._result_store.set({})
 
-    result = agent_app.run_agent([HumanMessage(content="hi")])
+    result = await agent_app.run_agent([HumanMessage(content="hi")])
 
     assert result["tokens_used"] == {"input": 30, "output": 10, "total": 40}
 >>>>>>> feature/s3-integration
