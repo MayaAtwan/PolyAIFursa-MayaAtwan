@@ -228,14 +228,17 @@ logger.info("Model profile loaded: model=%s, max_input_tokens=%s", MODEL, _max_i
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global llm_with_tools
-    mcp_client = MultiServerMCPClient(
-        {"img-proc": {"url": MCP_SERVER_URL, "transport": "streamable_http"}}
-    )
-    mcp_tools = await mcp_client.get_tools()
-    for t in mcp_tools:
-        TOOLS[t.name] = t
-    llm_with_tools = llm.bind_tools(list(TOOLS.values()))
-    logger.info("MCP tools loaded: %s", [t.name for t in mcp_tools])
+    try:
+        mcp_client = MultiServerMCPClient(
+            {"img-proc": {"url": MCP_SERVER_URL, "transport": "streamable_http"}}
+        )
+        mcp_tools = await mcp_client.get_tools()
+        for t in mcp_tools:
+            TOOLS[t.name] = t
+        llm_with_tools = llm.bind_tools(list(TOOLS.values()))
+        logger.info("MCP tools loaded: %s", [t.name for t in mcp_tools])
+    except Exception as e:
+        logger.warning("MCP server unavailable, starting without image-processing tools: %s", e)
     yield
 
 
