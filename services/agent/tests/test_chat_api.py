@@ -24,7 +24,9 @@ def test_health(client):
 
 
 def test_chat_returns_agent_result(client, agent_app, monkeypatch):
-    monkeypatch.setattr(agent_app, "run_agent", lambda history: _fixed_agent_result())
+    async def _fake_run_agent(history):
+        return _fixed_agent_result()
+    monkeypatch.setattr(agent_app, "run_agent", _fake_run_agent)
 
     response = client.post("/chat", json={"messages": [{"role": "user", "content": "What is in this image?"}]})
 
@@ -41,7 +43,7 @@ def test_chat_returns_agent_result(client, agent_app, monkeypatch):
 def test_chat_populates_prediction_and_image(client, agent_app, monkeypatch):
     """The endpoint should surface values the agentic loop writes into the result store."""
 
-    def fake_run_agent(history):
+    async def fake_run_agent(history):
         store = agent_app._result_store.get()
         store["prediction_uid"] = "abc-123"
         store["annotated_image_key"] = "chat/uid/annotated/image.png"
@@ -62,7 +64,7 @@ def test_chat_image_message(client, agent_app, monkeypatch):
     """A user message carrying an image is accepted and the image is threaded to the loop."""
     captured = {}
 
-    def fake_run_agent(history):
+    async def fake_run_agent(history):
         captured["image"] = agent_app._current_image_b64.get()
         return _fixed_agent_result()
 
