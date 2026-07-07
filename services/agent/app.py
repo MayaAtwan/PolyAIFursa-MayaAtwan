@@ -82,7 +82,9 @@ SYSTEM_PROMPT = (
     "- For the full uploaded image: call the transformation tool directly, do NOT provide image_b64. "
     "- For a specific detected object: call detect_objects, then get_object_region_b64 to select the region, "
     "then call the transformation tool directly without providing image_b64. "
-    "The image or region is always supplied to the transformation tool automatically."
+    "The image or region is always supplied to the transformation tool automatically. "
+    "When the user requests multiple transformations, call them sequentially — "
+    "each result automatically becomes the input to the next."
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
@@ -100,7 +102,7 @@ def detect_objects() -> str:
     if not image_b64:
         return json.dumps({"error": "No image was provided by the user."})
 
-    image_bytes = base64.b64decode(image_b64)
+    image_bytes = base64.b64decode(image_b64) #s3 stores files as bytes, so we need to decode the base64 string to bytes before uploading to S3
 
     # Upload the original image to S3, organised per chat:
     #   <chat_id>/<prediction_id>/original/<image_name>
@@ -168,7 +170,7 @@ def get_object_region_b64(label: str, rank: int) -> str:
 
     x1, y1, x2, y2 = [int(v) for v in matches[rank - 1]["box"]]
     img = PILImage.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
-    buf = io.BytesIO()
+    buf = io.BytesIO() #create an in-memory bytes buffer to hold the cropped image
     img.crop((x1, y1, x2, y2)).save(buf, format="JPEG")
     region_b64 = base64.b64encode(buf.getvalue()).decode()
     if store is not None:
@@ -322,7 +324,7 @@ async def run_agent(history: list, max_iterations: int = 10) -> dict:
 
             if tool_call["name"] in _IMG_PROC_MCP_TOOLS:
                 store = _result_store.get() or {}
-                source_b64 = store.pop("pending_image_b64", None) or _current_image_b64.get() or ""
+                source_b64 = store.pop("pending_image_b64", None) or store.get("last_transformed_b64") or _current_image_b64.get() or ""
                 tool_call = {**tool_call, "args": {**tool_call["args"], "image_b64": source_b64}}
 
             tool_msg = await tool_fn.ainvoke(tool_call)
@@ -337,13 +339,16 @@ async def run_agent(history: list, max_iterations: int = 10) -> dict:
                 else:
                     result_b64 = None
                 if result_b64:
-                    store = _result_store.get() or {}
+                    store = _result_store.get()
+                    if store is None:
+                        store = {}
                     region_box = store.pop("last_region_box", None)
                     if region_box:
-                        original_b64 = _current_image_b64.get()
+                        original_b64 = store.get("last_transformed_b64") or _current_image_b64.get()
                         if original_b64:
                             result_b64 = _composite_region(original_b64, result_b64, region_box)
                     await upload_result_image.ainvoke({"image_b64": result_b64})
+                    store["last_transformed_b64"] = result_b64
                 tool_msg.content = json.dumps({"success": True})
 
             messages.append(tool_msg)
