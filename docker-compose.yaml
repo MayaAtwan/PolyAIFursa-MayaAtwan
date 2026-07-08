@@ -17,7 +17,7 @@ services:
       # container is stopped, deleted, or replaced with a new image version.
       - yolo_uploads:/uploads   # original + annotated images survive container restarts
       - yolo_db:/app            # SQLite predictions.db survives container restarts
-    networks: [polyai]
+    networks: [polyai-net]
 
   agent:
     image: ${DOCKERHUB_USERNAME}/agent:${AGENT_IMAGE_TAG}
@@ -27,7 +27,7 @@ services:
       - services/agent/.env   # loads LLM API keys (OpenAI, Anthropic, etc.) and AWS keys
     environment:
       # Inside Docker, containers reach each other by service name — NOT localhost.
-      # 'yolo' resolves to the yolo container's IP on the polyai network.
+      # 'yolo' resolves to the yolo container's IP on the polyai-net network.
       # These override any YOLO_SERVICE_URL / MCP_SERVER_URL set in services/agent/.env.
       - YOLO_SERVICE_URL=http://yolo:8080
       - MCP_SERVER_URL=http://img-proc-mcp:9000/mcp
@@ -35,7 +35,7 @@ services:
     depends_on:
       - yolo
       - img-proc-mcp
-    networks: [polyai]
+    networks: [polyai-net]
 
   frontend:
     image: ${DOCKERHUB_USERNAME}/frontend:${FRONTEND_IMAGE_TAG}
@@ -44,13 +44,15 @@ services:
     # Note: NEXT_PUBLIC_AGENT_URL is baked into the JS bundle at BUILD time.
     # It's passed as a --build-arg during docker build (see deploy-frontend.yaml).
     # Setting it here at runtime has no effect on the compiled Next.js code.
-    networks: [polyai]
+    depends_on:
+      - agent
+    networks: [polyai-net]
 
   img-proc-mcp:
     image: ${DOCKERHUB_USERNAME}/img-proc-mcp:${MCP_IMAGE_TAG}
     ports:
       - "9000:9000"
-    networks: [polyai]
+    networks: [polyai-net]
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Observability Stack
@@ -64,7 +66,10 @@ services:
       # :ro = read-only mount. The container can read but never modify our config file.
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus   # scraped time-series data persists between restarts
-    networks: [polyai]
+    depends_on:
+      - yolo
+      - node-exporter
+    networks: [polyai-net, monitoring-net]
 
   grafana:
     image: grafana/grafana:latest
@@ -81,7 +86,7 @@ services:
       # auto-configures datasources — no manual UI setup needed.
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on: [prometheus]
-    networks: [polyai]
+    networks: [monitoring-net]
 
   node-exporter:
     image: prom/node-exporter:latest
@@ -100,10 +105,11 @@ services:
     command:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
       # Exclude virtual/overlay filesystems (docker layers, tmpfs, etc.) from disk metrics.
       # $$ is an escaped $ in docker-compose YAML — it becomes a literal $ in the shell.
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
-    networks: [polyai]
+    networks: [monitoring-net]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Named Volumes
@@ -118,9 +124,11 @@ volumes:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Networks
-# All services on the 'polyai' bridge network can reach each other by service
-# name. E.g., the agent container can HTTP-call 'http://yolo:8080' directly.
+# polyai-net: all app services + prometheus (bridges to monitoring-net).
+# monitoring-net: observability only — prometheus, grafana, node-exporter.
 # ─────────────────────────────────────────────────────────────────────────────
 networks:
-  polyai:
+  polyai-net:
+    driver: bridge
+  monitoring-net:
     driver: bridge
