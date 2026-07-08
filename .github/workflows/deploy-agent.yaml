@@ -1,6 +1,8 @@
 name: Deploy Agent Service
 
-# Only triggers when files inside services/agent/ change.
+# This workflow runs ONLY when files inside services/agent/ change.
+# Pushing changes to services/frontend/ or services/yolo/ will NOT trigger this.
+# That's how each service stays independently deployable.
 on:
   push:
     branches: [dev, main]
@@ -9,29 +11,44 @@ on:
 
 jobs:
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Build the Docker image and push it to DockerHub
+  # ────────────────────────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
     steps:
+      # Download the repository code onto the CI runner machine
       - uses: actions/checkout@v4
 
+      # Log in to DockerHub so we can push images.
+      # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are stored as GitHub Secrets
+      # (repo → Settings → Secrets and variables → Actions).
       - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Build the image from services/agent/Dockerfile and push it.
+      # Tag = commit SHA (e.g. a1b2c3d4...) — unique per build, never reused.
+      # This means you can always trace a running container back to the exact commit.
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./services/agent
+          context: ./services/agent   # directory containing the Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/agent:${{ github.sha }}
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Deploy the new image to the server
+  # Only runs if the build job succeeded (needs: build).
+  # ────────────────────────────────────────────────────────────────────────────
   deploy:
     needs: build
     runs-on: ubuntu-latest
     steps:
 
+      # Deploy to the Dev server when pushing to the dev branch
       - name: Deploy to Dev server
         if: github.ref == 'refs/heads/dev'
         uses: appleboy/ssh-action@v1
@@ -40,14 +57,26 @@ jobs:
           username: ubuntu
           key: ${{ secrets.DEV_INSTANCE_SSH_KEY }}
           script: |
-            set -e
+            set -e   # if any command fails, stop immediately (don't continue to next lines)
             cd ~/PolyAIFursa-MayaAtwan
+
+            # Pull the latest repo so docker-compose.yaml and configs are up to date
             git pull origin dev
+
+            # Update AGENT_IMAGE_TAG in the server's .env file to the new commit SHA.
+            # sed -i replaces the matching line in place.
+            # The || (or) handles the case where the line doesn't exist yet — it appends it.
             sed -i "s|^AGENT_IMAGE_TAG=.*|AGENT_IMAGE_TAG=${{ github.sha }}|" .env \
               || echo "AGENT_IMAGE_TAG=${{ github.sha }}" >> .env
+
+            # Pull the new image from DockerHub (download the new version)
             docker compose pull agent
+
+            # Restart ONLY the agent container. Other services keep running untouched.
+            # -d = detached mode (runs in background, doesn't block the SSH session)
             docker compose up -d agent
 
+      # Deploy to the Prod server when pushing to the main branch
       - name: Deploy to Prod server
         if: github.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1

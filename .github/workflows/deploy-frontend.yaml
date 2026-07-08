@@ -1,6 +1,8 @@
 name: Deploy Frontend Service
 
-# Only triggers when files inside services/frontend/ change.
+# This workflow runs ONLY when files inside services/frontend/ change.
+# Pushing changes to services/agent/ or services/yolo/ will NOT trigger this.
+# That's how each service stays independently deployable.
 on:
   push:
     branches: [dev, main]
@@ -9,11 +11,18 @@ on:
 
 jobs:
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Build the Docker image and push it to DockerHub
+  # ────────────────────────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
     steps:
+      # Download the repository code onto the CI runner machine
       - uses: actions/checkout@v4
 
+      # Log in to DockerHub so we can push images.
+      # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are stored as GitHub Secrets
+      # (repo → Settings → Secrets and variables → Actions).
       - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
@@ -21,33 +30,41 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Build the Dev image — NEXT_PUBLIC_AGENT_URL points to the Dev server's agent.
-      # This ARG is baked into the compiled JS bundle (not a runtime env var).
+      # This ARG is baked into the compiled JS bundle at build time (not a runtime env var),
+      # so Dev and Prod must be built as separate images with different values.
+      # Tag = commit SHA — unique per build so the running container always traces back to a commit.
       - name: Build and push Docker image (Dev)
         if: github.ref == 'refs/heads/dev'
         uses: docker/build-push-action@v5
         with:
-          context: ./services/frontend
+          context: ./services/frontend   # directory containing the Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_AGENT_URL=http://maya-dev.fursa.click:8000
 
       # Build the Prod image — NEXT_PUBLIC_AGENT_URL points to the Prod server's agent.
+      # Same tag strategy as Dev; different build-arg value bakes the prod URL into the bundle.
       - name: Build and push Docker image (Prod)
         if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v5
         with:
-          context: ./services/frontend
+          context: ./services/frontend   # directory containing the Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_AGENT_URL=http://maya-prod.fursa.click:8000
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Deploy the new image to the server
+  # Only runs if the build job succeeded (needs: build).
+  # ────────────────────────────────────────────────────────────────────────────
   deploy:
     needs: build
     runs-on: ubuntu-latest
     steps:
 
+      # Deploy to the Dev server when pushing to the dev branch
       - name: Deploy to Dev server
         if: github.ref == 'refs/heads/dev'
         uses: appleboy/ssh-action@v1
@@ -56,14 +73,26 @@ jobs:
           username: ubuntu
           key: ${{ secrets.DEV_INSTANCE_SSH_KEY }}
           script: |
-            set -e
+            set -e   # if any command fails, stop immediately (don't continue to next lines)
             cd ~/PolyAIFursa-MayaAtwan
+
+            # Pull the latest repo so docker-compose.yaml and configs are up to date
             git pull origin dev
+
+            # Update FRONTEND_IMAGE_TAG in the server's .env file to the new commit SHA.
+            # sed -i replaces the matching line in place.
+            # The || (or) handles the case where the line doesn't exist yet — it appends it.
             sed -i "s|^FRONTEND_IMAGE_TAG=.*|FRONTEND_IMAGE_TAG=${{ github.sha }}|" .env \
               || echo "FRONTEND_IMAGE_TAG=${{ github.sha }}" >> .env
+
+            # Pull the new image from DockerHub (download the new version)
             docker compose pull frontend
+
+            # Restart ONLY the frontend container. Other services keep running untouched.
+            # -d = detached mode (runs in background, doesn't block the SSH session)
             docker compose up -d frontend
 
+      # Deploy to the Prod server when pushing to the main branch
       - name: Deploy to Prod server
         if: github.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1
