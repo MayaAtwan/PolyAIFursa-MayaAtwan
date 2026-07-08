@@ -243,7 +243,7 @@ async def lifespan(app: FastAPI):
     global llm_with_tools
     try:
         mcp_client = MultiServerMCPClient(
-            {"img-proc": {"url": MCP_SERVER_URL, "transport": "streamable_http"}}
+            {"img-proc": {"url": MCP_SERVER_URL, "transport": "sse"}}
         )
         mcp_tools = await mcp_client.get_tools()
         for t in mcp_tools:
