@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useId } from "react";
 import { SendHorizontal, ImagePlus, X } from "lucide-react";
 import { toast } from "sonner";
 import { sendMessage } from "@/lib/api";
@@ -8,7 +8,7 @@ import type { ChatMessage } from "@/lib/types";
 import MessageBubble from "./message-bubble";
 
 export default function Chat() {
-  const [chatId] = useState(() => crypto.randomUUID());
+  const chatId = useId();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [imageB64, setImageB64] = useState<string | null>(null);
