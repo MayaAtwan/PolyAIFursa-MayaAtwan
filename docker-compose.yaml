@@ -1,0 +1,126 @@
+services:
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Application Services
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  yolo:
+    # image: pulls this tag from DockerHub. ${VAR} is substituted from the .env file.
+    # Never use 'latest' — a unique SHA tag means you always know exactly what's running.
+    image: ${DOCKERHUB_USERNAME}/yolo:${YOLO_IMAGE_TAG}
+    ports:
+      - "8080:8080"   # host:container — access YOLO at http://localhost:8080
+    env_file:
+      - services/yolo/.env   # loads AWS keys, DB config, confidence threshold, etc.
+    volumes:
+      # Named volumes: Docker manages these directories. Data persists when the
+      # container is stopped, deleted, or replaced with a new image version.
+      - yolo_uploads:/uploads   # original + annotated images survive container restarts
+      - yolo_db:/app            # SQLite predictions.db survives container restarts
+    networks: [polyai]
+
+  agent:
+    image: ${DOCKERHUB_USERNAME}/agent:${AGENT_IMAGE_TAG}
+    ports:
+      - "8000:8000"
+    env_file:
+      - services/agent/.env   # loads LLM API keys (OpenAI, Anthropic, etc.) and AWS keys
+    environment:
+      # Inside Docker, containers reach each other by service name — NOT localhost.
+      # 'yolo' resolves to the yolo container's IP on the polyai network.
+      # These override any YOLO_SERVICE_URL / MCP_SERVER_URL set in services/agent/.env.
+      - YOLO_SERVICE_URL=http://yolo:8080
+      - MCP_SERVER_URL=http://img-proc-mcp:9000/mcp
+      - ALLOWED_ORIGINS=http://localhost:3000
+    depends_on:
+      - yolo
+      - img-proc-mcp
+    networks: [polyai]
+
+  frontend:
+    image: ${DOCKERHUB_USERNAME}/frontend:${FRONTEND_IMAGE_TAG}
+    ports:
+      - "3000:3000"   # access the UI at http://localhost:3000
+    # Note: NEXT_PUBLIC_AGENT_URL is baked into the JS bundle at BUILD time.
+    # It's passed as a --build-arg during docker build (see deploy-frontend.yaml).
+    # Setting it here at runtime has no effect on the compiled Next.js code.
+    networks: [polyai]
+
+  img-proc-mcp:
+    image: ${DOCKERHUB_USERNAME}/img-proc-mcp:${MCP_IMAGE_TAG}
+    ports:
+      - "9000:9000"
+    networks: [polyai]
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Observability Stack
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"   # Prometheus UI: http://localhost:9090
+    volumes:
+      # :ro = read-only mount. The container can read but never modify our config file.
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus   # scraped time-series data persists between restarts
+    networks: [polyai]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      # Grafana runs on port 3000 inside the container. We map it to host port 3001
+      # because the frontend already uses host port 3000.
+      # Access Grafana at: http://localhost:3001 (login: admin / admin)
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin   # change this in production
+    volumes:
+      - grafana_data:/var/lib/grafana   # dashboards and settings persist
+      # Provisioning folder: Grafana reads these YAML files at startup and
+      # auto-configures datasources — no manual UI setup needed.
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus]
+    networks: [polyai]
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    # pid: host — Node Exporter shares the host's PID namespace.
+    # Without this, it can only see container processes, not real host processes.
+    pid: host
+    ports:
+      - "9100:9100"
+    volumes:
+      # Mount the host's /proc, /sys, and / read-only.
+      # Node Exporter reads these pseudo-filesystems to get CPU, memory, disk stats.
+      # :ro ensures the container can never write to your host filesystem.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      # Exclude virtual/overlay filesystems (docker layers, tmpfs, etc.) from disk metrics.
+      # $$ is an escaped $ in docker-compose YAML — it becomes a literal $ in the shell.
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks: [polyai]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Named Volumes
+# Docker creates and manages these on the host. Data inside survives even when
+# containers are deleted and re-created with a new image version.
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  yolo_uploads:
+  yolo_db:
+  prometheus_data:
+  grafana_data:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# All services on the 'polyai' bridge network can reach each other by service
+# name. E.g., the agent container can HTTP-call 'http://yolo:8080' directly.
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  polyai:
+    driver: bridge

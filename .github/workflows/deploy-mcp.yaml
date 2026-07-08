@@ -1,0 +1,65 @@
+name: Deploy Image Processing MCP Service
+
+# Only triggers when files inside services/img-proc-mcp/ change.
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'services/img-proc-mcp/**'
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/img-proc-mcp
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/img-proc-mcp:${{ github.sha }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Deploy to Dev server
+        if: github.ref == 'refs/heads/dev'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: maya-dev.fursa.click
+          username: ubuntu
+          key: ${{ secrets.DEV_INSTANCE_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/PolyAIFursa-MayaAtwan
+            git pull origin dev
+            sed -i "s|^MCP_IMAGE_TAG=.*|MCP_IMAGE_TAG=${{ github.sha }}|" .env \
+              || echo "MCP_IMAGE_TAG=${{ github.sha }}" >> .env
+            docker compose pull img-proc-mcp
+            docker compose up -d img-proc-mcp
+
+      - name: Deploy to Prod server
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: maya-prod.fursa.click
+          username: ubuntu
+          key: ${{ secrets.PROD_INSTANCE_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/PolyAIFursa-MayaAtwan
+            git pull origin main
+            sed -i "s|^MCP_IMAGE_TAG=.*|MCP_IMAGE_TAG=${{ github.sha }}|" .env \
+              || echo "MCP_IMAGE_TAG=${{ github.sha }}" >> .env
+            docker compose pull img-proc-mcp
+            docker compose up -d img-proc-mcp

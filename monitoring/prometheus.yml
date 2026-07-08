@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s      # pull metrics from each target every 15 seconds
+  evaluation_interval: 15s  # evaluate alerting rules every 15 seconds
+
+scrape_configs:
+
+  # Node Exporter: host-level metrics — CPU, memory, disk, network, filesystem.
+  # 'node-exporter' resolves to the container IP inside the Docker bridge network.
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # YOLO service: HTTP request counts, latency histograms, response codes.
+  # Already instrumented with prometheus-fastapi-instrumentator (exposes /metrics).
+  - job_name: 'yolo'
+    static_configs:
+      - targets: ['yolo:8080']
+    metrics_path: '/metrics'
