@@ -3,6 +3,7 @@ import io
 from fastmcp import FastMCP
 from PIL import Image, ImageFilter
 import numpy as np
+# img-proc-mcp service
 
 mcp = FastMCP("img-proc")
 
