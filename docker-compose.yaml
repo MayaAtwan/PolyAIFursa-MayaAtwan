@@ -33,8 +33,10 @@ services:
       - MCP_SERVER_URL=http://img-proc-mcp:9000/sse
       - ALLOWED_ORIGINS=http://localhost:3000,http://maya-dev.fursa.click:3000
     depends_on:
-      - yolo
-      - img-proc-mcp
+      yolo:
+        condition: service_started
+      img-proc-mcp:
+        condition: service_healthy
     networks: [polyai-net]
 
   frontend:
@@ -53,6 +55,12 @@ services:
     ports:
       - "9000:9000"
     networks: [polyai-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/sse', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Observability Stack
