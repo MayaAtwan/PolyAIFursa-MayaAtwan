@@ -31,7 +31,7 @@ services:
       # These override any YOLO_SERVICE_URL / MCP_SERVER_URL set in services/agent/.env.
       - YOLO_SERVICE_URL=http://yolo:8080
       - MCP_SERVER_URL=http://img-proc-mcp:9000/mcp
-      - ALLOWED_ORIGINS=http://localhost:3000
+      - ALLOWED_ORIGINS=http://localhost:3000,http://maya-dev.fursa.click:3000
     depends_on:
       - yolo
       - img-proc-mcp
