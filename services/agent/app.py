@@ -183,11 +183,20 @@ def get_object_region_b64(label: str, rank: int) -> str:
 
 
 @tool
-def upload_result_image(image_b64: str) -> str:
-    """Upload a processed image (base64 JPEG) to storage so the user can see it.
-    This is called automatically after every transformation — do NOT call it yourself."""
+def upload_result_image() -> str:
+    """Upload the current image from the chat request. Do not provide image data."""
+    store = _result_store.get()
+    image_b64 = (store.get("last_transformed_b64") if store else None) or _current_image_b64.get()
+
+    if not image_b64:
+        return "No image was uploaded in this chat request."
+
+    try:
+        image_bytes = base64.b64decode(image_b64)
+    except Exception:
+        return "Could not upload image: invalid image data."
+
     chat_id = _current_chat_id.get() or str(uuid.uuid4())
-    image_bytes = base64.b64decode(image_b64)
     key = f"{chat_id}/{uuid.uuid4()}/processed/image.jpg"
     upload_bytes(image_bytes, key)
     store = _result_store.get()
@@ -374,8 +383,8 @@ async def run_agent(history: list, max_iterations: int = 10) -> dict:
                                 result_b64 = _composite_region_centered(original_b64, result_b64, region_box)
                             elif tool_call["name"] != "crop":
                                 result_b64 = _composite_region(original_b64, result_b64, region_box)
-                    await upload_result_image.ainvoke({"image_b64": result_b64})
                     store["last_transformed_b64"] = result_b64
+                    await upload_result_image.ainvoke({})
                 tool_msg.content = json.dumps({"success": True})
 
             messages.append(tool_msg)
