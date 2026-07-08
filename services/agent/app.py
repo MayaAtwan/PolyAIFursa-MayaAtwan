@@ -210,7 +210,6 @@ TOOLS = {
     detect_objects.name: detect_objects,
     get_annotated_image.name: get_annotated_image,
     get_object_region_b64.name: get_object_region_b64,
-    upload_result_image.name: upload_result_image,
 }
 
 # region_name is a Bedrock-only kwarg; other providers reject it, so add it conditionally.
