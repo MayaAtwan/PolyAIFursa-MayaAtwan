@@ -8,7 +8,9 @@ Functions are kept small and named so tests can monkeypatch them without a real
 S3 connection.
 """
 
+import base64
 import os
+from typing import Optional
 
 import boto3
 
@@ -49,3 +51,18 @@ def generate_presigned_url(key: str, expiry_seconds: int = 3600) -> str:
         Params={"Bucket": AWS_S3_BUCKET, "Key": key},
         ExpiresIn=expiry_seconds,
     )
+
+
+def save_session_image(chat_id: str, slot: str, image_b64: str) -> None:
+    """Persist a base64 image to s3://<bucket>/<chat_id>/session/<slot>.jpg."""
+    data = base64.b64decode(image_b64)
+    upload_bytes(data, f"{chat_id}/session/{slot}.jpg")
+
+
+def load_session_image(chat_id: str, slot: str) -> Optional[str]:
+    """Load s3://<bucket>/<chat_id>/session/<slot>.jpg and return as base64, or None."""
+    try:
+        data = download_bytes(f"{chat_id}/session/{slot}.jpg")
+        return base64.b64encode(data).decode()
+    except Exception:
+        return None

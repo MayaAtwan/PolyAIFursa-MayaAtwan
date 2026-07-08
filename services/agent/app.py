@@ -36,7 +36,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from s3_utils import AWS_S3_BUCKET, upload_bytes, generate_presigned_url
+from s3_utils import AWS_S3_BUCKET, upload_bytes, generate_presigned_url, save_session_image, load_session_image
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:9000/mcp")
@@ -86,7 +86,10 @@ SYSTEM_PROMPT = (
     "When the user requests multiple transformations, call them sequentially — "
     "each result automatically becomes the input to the next. "
     "After applying any transformation (flip, rotate, resize, or crop), call detect_objects again "
-    "before selecting a region — the previous detection is stale."
+    "before selecting a region — the previous detection is stale. "
+    "If the user asks to go back to the original image or undo all transformations, call reset_to_original. "
+    "For resize, prefer scale_factor (e.g. 0.5 to halve, 2.0 to double) over absolute pixel dimensions, "
+    "especially when resizing a detected object region."
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
@@ -205,11 +208,28 @@ def upload_result_image() -> str:
     return json.dumps({"success": True})
 
 
+@tool
+def reset_to_original() -> str:
+    """Revert the working image to the original uploaded image, discarding all transforms."""
+    chat_id = _current_chat_id.get()
+    store = _result_store.get() or {}
+    original = load_session_image(chat_id, "original") if chat_id else None
+    if original is None:
+        original = _current_image_b64.get()
+    if original:
+        store["last_transformed_b64"] = original
+        if chat_id:
+            save_session_image(chat_id, "latest", original)
+        return json.dumps({"success": True, "message": "Reverted to original image."})
+    return json.dumps({"success": False, "message": "No original image found."})
+
+
 # Registry: map tool name -> tool function (MCP tools added at startup via lifespan)
 TOOLS = {
     detect_objects.name: detect_objects,
     get_annotated_image.name: get_annotated_image,
     get_object_region_b64.name: get_object_region_b64,
+    reset_to_original.name: reset_to_original,
 }
 
 # region_name is a Bedrock-only kwarg; other providers reject it, so add it conditionally.
@@ -291,8 +311,9 @@ def _composite_region_centered(original_b64: str, region_b64: str, box: list) ->
     region = PILImage.open(io.BytesIO(base64.b64decode(region_b64))).convert("RGB")
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
     rw, rh = region.size
-    paste_x = max(0, cx - rw // 2)
-    paste_y = max(0, cy - rh // 2)
+    # Clamp so the pasted region never goes outside the canvas boundaries.
+    paste_x = max(0, min(cx - rw // 2, original.width - rw))
+    paste_y = max(0, min(cy - rh // 2, original.height - rh))
     original.paste(region, (paste_x, paste_y))
     buf = io.BytesIO()
     original.save(buf, format="JPEG")
@@ -383,6 +404,12 @@ async def run_agent(history: list, max_iterations: int = 10) -> dict:
                             elif tool_call["name"] != "crop":
                                 result_b64 = _composite_region(original_b64, result_b64, region_box)
                     store["last_transformed_b64"] = result_b64
+                    _cid = _current_chat_id.get()
+                    if _cid:
+                        try:
+                            save_session_image(_cid, "latest", result_b64)
+                        except Exception:
+                            logger.warning("Could not save session latest to S3 for chat_id=%s", _cid)
                     await upload_result_image.ainvoke({})
                 tool_msg.content = json.dumps({"success": True})
 
@@ -464,7 +491,28 @@ async def chat(request: Request, request_body: ChatRequest):
 
     chat_id = request_body.chat_id or str(uuid.uuid4())
 
+    # Detect whether an image was uploaded in this specific turn (last user message),
+    # as opposed to images that appear only in earlier turns of the conversation history.
+    last_msg = request_body.messages[-1] if request_body.messages else None
+    new_image_this_turn = last_msg.image_base64 if (last_msg and last_msg.role == "user") else None
+
     result_store: dict = {}
+
+    if new_image_this_turn:
+        # New upload: persist as the session original so it can be restored later.
+        try:
+            save_session_image(chat_id, "original", new_image_this_turn)
+        except Exception:
+            logger.warning("Could not save session original to S3 for chat_id=%s", chat_id)
+    else:
+        # No new image this turn: restore the latest transformed image from the previous turn.
+        try:
+            session_latest = load_session_image(chat_id, "latest")
+            if session_latest:
+                result_store["last_transformed_b64"] = session_latest
+        except Exception:
+            logger.warning("Could not load session latest from S3 for chat_id=%s", chat_id)
+
     image_token = _current_image_b64.set(latest_image)
     chat_id_token = _current_chat_id.set(chat_id)
     store_token = _result_store.set(result_store)

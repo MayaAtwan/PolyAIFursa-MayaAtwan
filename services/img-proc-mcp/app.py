@@ -42,9 +42,16 @@ def blur(radius: float = 2.0, image_b64: str = "") -> str:
 
 
 @mcp.tool()
-def resize(width: int, height: int, image_b64: str = "") -> str:
-    """Resize the image to width x height pixels. image_b64 is supplied automatically by the agent."""
-    return _encode(_decode(image_b64).resize((width, height), Image.LANCZOS))
+def resize(image_b64: str = "", width: int = 0, height: int = 0, scale_factor: float = 0.0) -> str:
+    """Resize the image. Use scale_factor (e.g. 0.5 to halve, 2.0 to double) for proportional scaling,
+    or width/height for absolute pixel dimensions. image_b64 is supplied automatically by the agent."""
+    img = _decode(image_b64)
+    if scale_factor > 0:
+        width = max(1, int(img.width * scale_factor))
+        height = max(1, int(img.height * scale_factor))
+    if width <= 0 or height <= 0:
+        raise ValueError("Provide scale_factor > 0, or both width > 0 and height > 0.")
+    return _encode(img.resize((width, height), Image.LANCZOS))
 
 
 @mcp.tool()
