@@ -15,7 +15,6 @@ services:
     volumes:
       # Named volumes: Docker manages these directories. Data persists when the
       # container is stopped, deleted, or replaced with a new image version.
-      - yolo_uploads:/uploads   # original + annotated images survive container restarts
       - yolo_db:/app            # SQLite predictions.db survives container restarts
     networks: [polyai-net]
 
