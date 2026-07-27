@@ -5,10 +5,10 @@ FakeMessagesListChatModel, which returns predefined AIMessages (preserving
 tool_calls and usage_metadata). No real LLM or YOLO service is contacted.
 """
 import base64
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 def _tool_call(name="detect_objects", call_id="call_1"):
@@ -162,3 +162,82 @@ async def test_token_accounting(agent_app, monkeypatch):
     result = await agent_app.run_agent([HumanMessage(content="hi")])
 
     assert result["tokens_used"] == {"input": 30, "output": 10, "total": 40}
+
+
+async def test_single_mcp_transform_stores_result(agent_app, monkeypatch):
+    """A single MCP transform stores its result in last_transformed_b64 for future chaining."""
+    original_b64 = base64.b64encode(b"original").decode()
+    rotated_b64 = base64.b64encode(b"rotated").decode()
+
+    fake_rotate = MagicMock()
+    fake_rotate.ainvoke = AsyncMock(return_value=ToolMessage(content=rotated_b64, tool_call_id="c1"))
+    monkeypatch.setitem(agent_app.TOOLS, "rotate", fake_rotate)
+    monkeypatch.setattr(agent_app, "_IMG_PROC_MCP_TOOLS", {"rotate"})
+
+    fake_upload = MagicMock()
+    fake_upload.ainvoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(agent_app, "upload_result_image", fake_upload)
+
+    _set_llm(agent_app, monkeypatch, [
+        AIMessage(content="", tool_calls=[{"name": "rotate", "args": {"degrees": 90}, "id": "c1", "type": "tool_call"}]),
+        AIMessage(content="Rotated!"),
+    ])
+
+    store = {}
+    agent_app._current_image_b64.set(original_b64)
+    agent_app._result_store.set(store)
+
+    result = await agent_app.run_agent([HumanMessage(content="rotate 90 degrees")])
+
+    assert result["tools_called"] == ["rotate"]
+    assert store.get("last_transformed_b64") == rotated_b64
+    injected_args = fake_rotate.ainvoke.call_args[0][0]["args"]
+    assert injected_args["image_b64"] == original_b64
+
+
+async def test_chained_mcp_transforms_use_previous_result(agent_app, monkeypatch):
+    """Second MCP transform receives the result of the first, not the original image."""
+    original_b64 = base64.b64encode(b"original").decode()
+    flipped_b64 = base64.b64encode(b"flipped").decode()
+    rotated_b64 = base64.b64encode(b"rotated").decode()
+
+    flip_received = []
+    rotate_received = []
+
+    async def fake_flip_invoke(tc):
+        flip_received.append(tc["args"]["image_b64"])
+        return ToolMessage(content=flipped_b64, tool_call_id=tc["id"])
+
+    async def fake_rotate_invoke(tc):
+        rotate_received.append(tc["args"]["image_b64"])
+        return ToolMessage(content=rotated_b64, tool_call_id=tc["id"])
+
+    fake_flip = MagicMock()
+    fake_flip.ainvoke = fake_flip_invoke
+    fake_rotate = MagicMock()
+    fake_rotate.ainvoke = fake_rotate_invoke
+
+    monkeypatch.setitem(agent_app.TOOLS, "flip", fake_flip)
+    monkeypatch.setitem(agent_app.TOOLS, "rotate", fake_rotate)
+    monkeypatch.setattr(agent_app, "_IMG_PROC_MCP_TOOLS", {"flip", "rotate"})
+
+    fake_upload = MagicMock()
+    fake_upload.ainvoke = AsyncMock(return_value=None)
+    monkeypatch.setattr(agent_app, "upload_result_image", fake_upload)
+
+    _set_llm(agent_app, monkeypatch, [
+        AIMessage(content="", tool_calls=[{"name": "flip", "args": {}, "id": "c1", "type": "tool_call"}]),
+        AIMessage(content="", tool_calls=[{"name": "rotate", "args": {"degrees": 90}, "id": "c2", "type": "tool_call"}]),
+        AIMessage(content="Done!"),
+    ])
+
+    store = {}
+    agent_app._current_image_b64.set(original_b64)
+    agent_app._result_store.set(store)
+
+    result = await agent_app.run_agent([HumanMessage(content="flip then rotate 90")])
+
+    assert result["tools_called"] == ["flip", "rotate"]
+    assert flip_received[0] == original_b64   # flip received the original
+    assert rotate_received[0] == flipped_b64  # rotate received the flipped result
+    assert store.get("last_transformed_b64") == rotated_b64

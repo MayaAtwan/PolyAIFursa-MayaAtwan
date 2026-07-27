@@ -82,7 +82,11 @@ SYSTEM_PROMPT = (
     "- For the full uploaded image: call the transformation tool directly, do NOT provide image_b64. "
     "- For a specific detected object: call detect_objects, then get_object_region_b64 to select the region, "
     "then call the transformation tool directly without providing image_b64. "
-    "The image or region is always supplied to the transformation tool automatically."
+    "The image or region is always supplied to the transformation tool automatically. "
+    "When the user requests multiple transformations, call them sequentially — "
+    "each result automatically becomes the input to the next. "
+    "After applying any transformation (flip, rotate, resize, or crop), call detect_objects again "
+    "before selecting a region — the previous detection is stale."
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
@@ -96,7 +100,8 @@ _result_store: ContextVar[Optional[dict]] = ContextVar("result_store", default=N
 @tool
 def detect_objects() -> str:
     """Detect and identify objects in the image provided by the user using YOLO object detection."""
-    image_b64 = _current_image_b64.get()
+    store = _result_store.get()
+    image_b64 = (store.get("last_transformed_b64") if store else None) or _current_image_b64.get()
     if not image_b64:
         return json.dumps({"error": "No image was provided by the user."})
 
@@ -153,7 +158,7 @@ def get_object_region_b64(label: str, rank: int) -> str:
     label: object class (e.g. 'dog'). rank: 1=rightmost, 2=second-from-right, etc.
     Call detect_objects first. After calling this, call the image processing tool directly — the region is passed automatically."""
     store = _result_store.get()
-    image_b64 = _current_image_b64.get()
+    image_b64 = (store.get("last_transformed_b64") if store else None) or _current_image_b64.get()
     if not store or not image_b64:
         return json.dumps({"error": "No image or detection results available. Call detect_objects first."})
 
@@ -168,7 +173,7 @@ def get_object_region_b64(label: str, rank: int) -> str:
 
     x1, y1, x2, y2 = [int(v) for v in matches[rank - 1]["box"]]
     img = PILImage.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
-    buf = io.BytesIO()
+    buf = io.BytesIO() #create an in-memory bytes buffer to hold the cropped image
     img.crop((x1, y1, x2, y2)).save(buf, format="JPEG")
     region_b64 = base64.b64encode(buf.getvalue()).decode()
     if store is not None:
@@ -180,7 +185,7 @@ def get_object_region_b64(label: str, rank: int) -> str:
 @tool
 def upload_result_image(image_b64: str) -> str:
     """Upload a processed image (base64 JPEG) to storage so the user can see it.
-    Call this after applying any image transformation to make the result visible."""
+    This is called automatically after every transformation — do NOT call it yourself."""
     chat_id = _current_chat_id.get() or str(uuid.uuid4())
     image_bytes = base64.b64decode(image_b64)
     key = f"{chat_id}/{uuid.uuid4()}/processed/image.jpg"
@@ -271,6 +276,21 @@ def _composite_region(original_b64: str, region_b64: str, box: list) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _composite_region_centered(original_b64: str, region_b64: str, box: list) -> str:
+    """Paste a resized region centered on the original bounding box, preserving surrounding background."""
+    x1, y1, x2, y2 = box
+    original = PILImage.open(io.BytesIO(base64.b64decode(original_b64))).convert("RGB")
+    region = PILImage.open(io.BytesIO(base64.b64decode(region_b64))).convert("RGB")
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    rw, rh = region.size
+    paste_x = max(0, cx - rw // 2)
+    paste_y = max(0, cy - rh // 2)
+    original.paste(region, (paste_x, paste_y))
+    buf = io.BytesIO()
+    original.save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 _IMG_PROC_MCP_TOOLS = {"rotate", "flip", "blur", "resize", "crop", "add_noise"}
 
 
@@ -322,7 +342,7 @@ async def run_agent(history: list, max_iterations: int = 10) -> dict:
 
             if tool_call["name"] in _IMG_PROC_MCP_TOOLS:
                 store = _result_store.get() or {}
-                source_b64 = store.pop("pending_image_b64", None) or _current_image_b64.get() or ""
+                source_b64 = store.pop("pending_image_b64", None) or store.get("last_transformed_b64") or _current_image_b64.get() or ""
                 tool_call = {**tool_call, "args": {**tool_call["args"], "image_b64": source_b64}}
 
             tool_msg = await tool_fn.ainvoke(tool_call)
@@ -337,13 +357,25 @@ async def run_agent(history: list, max_iterations: int = 10) -> dict:
                 else:
                     result_b64 = None
                 if result_b64:
-                    store = _result_store.get() or {}
+                    try:
+                        base64.b64decode(result_b64, validate=True)
+                    except Exception:
+                        logger.warning("MCP tool '%s' returned non-image content, skipping upload", tool_call["name"])
+                        result_b64 = None
+                if result_b64:
+                    store = _result_store.get()
+                    if store is None:
+                        store = {}
                     region_box = store.pop("last_region_box", None)
                     if region_box:
-                        original_b64 = _current_image_b64.get()
+                        original_b64 = store.get("last_transformed_b64") or _current_image_b64.get()
                         if original_b64:
-                            result_b64 = _composite_region(original_b64, result_b64, region_box)
+                            if tool_call["name"] == "resize":
+                                result_b64 = _composite_region_centered(original_b64, result_b64, region_box)
+                            elif tool_call["name"] != "crop":
+                                result_b64 = _composite_region(original_b64, result_b64, region_box)
                     await upload_result_image.ainvoke({"image_b64": result_b64})
+                    store["last_transformed_b64"] = result_b64
                 tool_msg.content = json.dumps({"success": True})
 
             messages.append(tool_msg)
