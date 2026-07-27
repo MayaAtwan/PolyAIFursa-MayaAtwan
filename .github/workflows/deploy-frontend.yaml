@@ -1,0 +1,81 @@
+name: Deploy Frontend Service
+
+# Only triggers when files inside services/frontend/ change.
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'services/frontend/**'
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Build the Dev image — NEXT_PUBLIC_AGENT_URL points to the Dev server's agent.
+      # This ARG is baked into the compiled JS bundle (not a runtime env var).
+      - name: Build and push Docker image (Dev)
+        if: github.ref == 'refs/heads/dev'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/frontend
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_AGENT_URL=http://maya-dev.fursa.click:8000
+
+      # Build the Prod image — NEXT_PUBLIC_AGENT_URL points to the Prod server's agent.
+      - name: Build and push Docker image (Prod)
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/frontend
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_AGENT_URL=http://maya-prod.fursa.click:8000
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Deploy to Dev server
+        if: github.ref == 'refs/heads/dev'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: maya-dev.fursa.click
+          username: ubuntu
+          key: ${{ secrets.DEV_INSTANCE_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/PolyAIFursa-MayaAtwan
+            git pull origin dev
+            sed -i "s|^FRONTEND_IMAGE_TAG=.*|FRONTEND_IMAGE_TAG=${{ github.sha }}|" .env \
+              || echo "FRONTEND_IMAGE_TAG=${{ github.sha }}" >> .env
+            docker compose pull frontend
+            docker compose up -d frontend
+
+      - name: Deploy to Prod server
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: maya-prod.fursa.click
+          username: ubuntu
+          key: ${{ secrets.PROD_INSTANCE_SSH_KEY }}
+          script: |
+            set -e
+            cd ~/PolyAIFursa-MayaAtwan
+            git pull origin main
+            sed -i "s|^FRONTEND_IMAGE_TAG=.*|FRONTEND_IMAGE_TAG=${{ github.sha }}|" .env \
+              || echo "FRONTEND_IMAGE_TAG=${{ github.sha }}" >> .env
+            docker compose pull frontend
+            docker compose up -d frontend

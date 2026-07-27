@@ -6,7 +6,7 @@
 .env.development.local
 .env.test.local
 .env.production.local
-.env.example
+# .env.example is intentionally tracked — it's a template, not a secrets file
 
 *.db
 *.pt

@@ -1,0 +1,11 @@
+# Grafana reads this file at startup and automatically creates the Prometheus
+# datasource — no manual UI clicks needed.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    # 'prometheus' resolves to the Prometheus container inside the Docker network
+    url: http://prometheus:9090
+    isDefault: true     # used by default when creating new panels/dashboards
+    access: proxy       # Grafana server fetches data from Prometheus (not the browser)
