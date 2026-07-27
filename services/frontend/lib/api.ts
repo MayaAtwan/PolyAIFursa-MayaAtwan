@@ -3,12 +3,13 @@ import type { ChatMessage } from "./types";
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_URL ?? "http://localhost:8000";
 
 export async function sendMessage(
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  chatId: string
 ): Promise<{ response: string; annotated_image_url?: string }> {
   const res = await fetch(`${AGENT_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, chat_id: chatId }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);

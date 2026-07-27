@@ -15,7 +15,6 @@ services:
     volumes:
       # Named volumes: Docker manages these directories. Data persists when the
       # container is stopped, deleted, or replaced with a new image version.
-      - yolo_uploads:/uploads   # original + annotated images survive container restarts
       - yolo_db:/app            # SQLite predictions.db survives container restarts
     networks: [polyai-net]
 
@@ -30,11 +29,13 @@ services:
       # 'yolo' resolves to the yolo container's IP on the polyai-net network.
       # These override any YOLO_SERVICE_URL / MCP_SERVER_URL set in services/agent/.env.
       - YOLO_SERVICE_URL=http://yolo:8080
-      - MCP_SERVER_URL=http://img-proc-mcp:9000/mcp
-      - ALLOWED_ORIGINS=http://localhost:3000
+      - MCP_SERVER_URL=http://img-proc-mcp:9000/sse
+      - ALLOWED_ORIGINS=http://localhost:3000,http://maya-dev.fursa.click:3000
     depends_on:
-      - yolo
-      - img-proc-mcp
+      yolo:
+        condition: service_started
+      img-proc-mcp:
+        condition: service_healthy
     networks: [polyai-net]
 
   frontend:
@@ -53,6 +54,12 @@ services:
     ports:
       - "9000:9000"
     networks: [polyai-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/sse', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Observability Stack

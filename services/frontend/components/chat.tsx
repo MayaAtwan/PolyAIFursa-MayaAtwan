@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useId } from "react";
 import { SendHorizontal, ImagePlus, X } from "lucide-react";
 import { toast } from "sonner";
 import { sendMessage } from "@/lib/api";
@@ -8,6 +8,7 @@ import type { ChatMessage } from "@/lib/types";
 import MessageBubble from "./message-bubble";
 
 export default function Chat() {
+  const chatId = useId();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [imageB64, setImageB64] = useState<string | null>(null);
@@ -60,7 +61,7 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      const { response: reply, annotated_image_url } = await sendMessage(next);
+      const { response: reply, annotated_image_url } = await sendMessage(next, chatId);
       setMessages([...next, { role: "assistant", content: reply, annotated_image_url }]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Something went wrong");
