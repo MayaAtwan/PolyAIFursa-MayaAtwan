@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import Response, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -7,6 +10,9 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 from ultralytics import YOLO
 from PIL import Image
@@ -39,11 +45,11 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
     )
 
-# Create tables at import time so pytest (which imports this module) has them ready.
-Base.metadata.create_all(bind=engine)
-
 # Expose /metrics endpoint with default process metrics + FastAPI HTTP metrics
 Instrumentator().instrument(app).expose(app)
+
+# Create tables at import time so pytest (which imports this module) has them ready.
+Base.metadata.create_all(bind=engine)
 
 if not AWS_S3_BUCKET:
     logging.warning(

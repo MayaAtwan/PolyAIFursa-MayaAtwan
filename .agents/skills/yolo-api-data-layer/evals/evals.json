@@ -1,0 +1,83 @@
+[
+  {
+    "id": "eval-01-full-refactor",
+    "prompt": "refactor the api to use sqlalchemy",
+    "expected_output": "Creates services/yolo/models.py (PredictionSession + DetectionObjectModel) and services/yolo/db.py (engine, SessionLocal, get_db). Removes import sqlite3, DB_PATH, init_db, save_prediction_session, and save_detection_object from app.py; adds Base.metadata.create_all(bind=engine) at module level and db: Session = Depends(get_db) on every DB endpoint. Converts conftest.py to dependency_overrides isolation. No raw SQL or sqlite3 remains, existing endpoints/status codes/response shapes are unchanged, and pytest passes.",
+    "assertions": [
+      { "type": "file_exists", "path": "services/yolo/models.py" },
+      { "type": "file_exists", "path": "services/yolo/db.py" },
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "class PredictionSession" },
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "class DetectionObjectModel" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "def get_db" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "import sqlite3" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "DB_PATH" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "sqlite3.connect" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "Depends(get_db)", "min_occurrences": 5 },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "Base.metadata.create_all" },
+      { "type": "file_contains", "path": "services/yolo/requirements.txt", "pattern": "sqlalchemy" },
+      { "type": "file_contains", "path": "services/yolo/tests/conftest.py", "pattern": "dependency_overrides" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest --tb=short -q" }
+    ]
+  },
+  {
+    "id": "eval-02-add-column",
+    "prompt": "add a `processing_time_ms` INTEGER column to the prediction_sessions table to store how long inference took in milliseconds",
+    "expected_output": "Adds processing_time_ms = Column(Integer, nullable=True) to PredictionSession in models.py and writes the value when creating the session on POST /predict. Uses the ORM only — no ALTER TABLE or CREATE TABLE strings. pytest still passes.",
+    "assertions": [
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "processing_time_ms" },
+      { "type": "file_contains", "path": "services/yolo/models.py", "pattern": "Column(Integer" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "ALTER TABLE" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "CREATE TABLE" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest --tb=short -q" }
+    ]
+  },
+  {
+    "id": "eval-03-new-endpoint",
+    "prompt": "add a GET /predictions/recent endpoint that returns the 10 most recent prediction sessions ordered by timestamp descending",
+    "expected_output": "Adds a GET /predictions/recent endpoint with db: Session = Depends(get_db) that queries db.query(PredictionSession).order_by(PredictionSession.timestamp.desc()).limit(10).all() and returns uid/timestamp/original_image/predicted_image. No raw SQL (no ORDER BY string).",
+    "assertions": [
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "/predictions/recent" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "Depends(get_db)" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": ".desc()" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": ".limit(10)" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "ORDER BY" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest --tb=short -q" }
+    ]
+  },
+  {
+    "id": "eval-04-write-test",
+    "prompt": "write a test for the GET /predictions/recent endpoint",
+    "expected_output": "Creates tests/test_predictions_recent.py that seeds via ORM model instances through app.dependency_overrides[get_db] and asserts a 200 list ordered by timestamp descending. Does not import sqlite3, init_db, save_prediction_session, or save_detection_object.",
+    "assertions": [
+      { "type": "file_not_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "import sqlite3" },
+      { "type": "file_not_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "save_prediction_session" },
+      { "type": "file_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "dependency_overrides" },
+      { "type": "file_contains", "path": "services/yolo/tests/test_predictions_recent.py", "pattern": "PredictionSession" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest tests/test_predictions_recent.py --tb=short -q" }
+    ]
+  },
+  {
+    "id": "eval-05-postgres-config",
+    "prompt": "configure the service to use a PostgreSQL database: host=db, port=5432, database=yolodb, user=yolo, password=secret",
+    "expected_output": "Explains that DB_BACKEND, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD env vars control the connection and no code change is needed, and confirms psycopg2-binary is in requirements.txt. Credentials are never hardcoded into db.py.",
+    "assertions": [
+      { "type": "file_not_contains", "path": "services/yolo/db.py", "pattern": "yolodb" },
+      { "type": "file_not_contains", "path": "services/yolo/db.py", "pattern": "secret" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "DB_BACKEND" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "DB_USER" },
+      { "type": "file_contains", "path": "services/yolo/db.py", "pattern": "DB_PASSWORD" },
+      { "type": "file_contains", "path": "services/yolo/requirements.txt", "pattern": "psycopg2-binary" }
+    ]
+  },
+  {
+    "id": "eval-06-no-raw-sql-regression",
+    "prompt": "the GET /predictions/score/{min_score} endpoint is returning dog (score 0.49) when I query with min_score=0.5 — fix it without using raw SQL",
+    "expected_output": "Fixes the score filter using only ORM expressions (DetectionObjectModel.score >= min_score, with score stored as Float). Introduces no sqlite3 or raw SELECT/WHERE strings. The score test passes.",
+    "assertions": [
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "sqlite3.connect" },
+      { "type": "file_not_contains", "path": "services/yolo/app.py", "pattern": "SELECT" },
+      { "type": "file_contains", "path": "services/yolo/app.py", "pattern": "DetectionObjectModel.score >=" },
+      { "type": "command_passes", "command": "cd services/yolo && pytest tests/test_predictions_score.py --tb=short -q" }
+    ]
+  }
+]

@@ -26,6 +26,9 @@ prometheus-fastapi-instrumentator>=6.0.0
 # Rate limiting
 slowapi>=0.1.9
 
+# Env vars
+python-dotenv>=1.0.0
+
 # Testing
 pytest==7.4.0
 pytest-cov==4.1.0

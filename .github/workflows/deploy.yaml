@@ -14,7 +14,7 @@ jobs:
       - name: Deploy to Dev instance
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.DEV_INSTANCE_IP }}
+          host: maya-dev.fursa.click 
           username: ubuntu
           key: ${{ secrets.DEV_INSTANCE_SSH_KEY }}
           script: |
@@ -54,7 +54,7 @@ jobs:
       - name: Deploy to Prod instance
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.PROD_INSTANCE_IP }}
+          host: maya-prod.fursa.click
           username: ubuntu
           key: ${{ secrets.PROD_INSTANCE_SSH_KEY }}
           script: |

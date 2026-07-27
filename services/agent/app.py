@@ -1,9 +1,11 @@
 import base64
+import io
 import json
 import logging
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Optional
 from langchain_core.rate_limiters import InMemoryRateLimiter
@@ -24,22 +26,25 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from PIL import Image as PILImage
+from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
-from pydantic import BaseModel
 
 from s3_utils import AWS_S3_BUCKET, upload_bytes, generate_presigned_url
 
 YOLO_SERVICE_URL = os.environ.get("YOLO_SERVICE_URL", "http://localhost:8080")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:9000/mcp")
 MODEL = os.environ.get("MODEL")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 if not AWS_S3_BUCKET:
-    logging.getLogger(__name__).warning(
+    logger.warning(
         "AWS_S3_BUCKET is not set; image uploads to S3 will fail. "
         "Set AWS_S3_BUCKET (and AWS_REGION) in the environment."
     )
@@ -73,6 +78,11 @@ ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 SYSTEM_PROMPT = (
     "You are an AI vision assistant. You help users understand and analyze images. "
     "Use the available tools to extract information from images. "
+    "When applying any image transformation (rotate, flip, blur, resize, crop, add_noise): "
+    "- For the full uploaded image: call the transformation tool directly, do NOT provide image_b64. "
+    "- For a specific detected object: call detect_objects, then get_object_region_b64 to select the region, "
+    "then call the transformation tool directly without providing image_b64. "
+    "The image or region is always supplied to the transformation tool automatically."
 )
 
 _current_image_b64: ContextVar[Optional[str]] = ContextVar("current_image_b64", default=None)
@@ -81,6 +91,7 @@ _current_chat_id: ContextVar[Optional[str]] = ContextVar("current_chat_id", defa
 # LangChain's invoke() uses copy_context().run(), which isolates ContextVar *assignments*
 # but not mutations to objects already referenced by the var.
 _result_store: ContextVar[Optional[dict]] = ContextVar("result_store", default=None)
+
 
 @tool
 def detect_objects() -> str:
@@ -110,6 +121,7 @@ def detect_objects() -> str:
     store = _result_store.get()
     if store is not None:
         store["prediction_uid"] = result.get("uid")
+        store["detection_objects"] = result.get("detection_objects", [])
 
     return json.dumps(result)
 
@@ -135,10 +147,56 @@ def get_annotated_image() -> str:
         return json.dumps({"error": f"Could not retrieve image (status {img_response.status_code})"})
 
 
-# Registry: map tool name -> tool function
+@tool
+def get_object_region_b64(label: str, rank: int) -> str:
+    """Select a detected object's region as the source for the next image processing operation.
+    label: object class (e.g. 'dog'). rank: 1=rightmost, 2=second-from-right, etc.
+    Call detect_objects first. After calling this, call the image processing tool directly — the region is passed automatically."""
+    store = _result_store.get()
+    image_b64 = _current_image_b64.get()
+    if not store or not image_b64:
+        return json.dumps({"error": "No image or detection results available. Call detect_objects first."})
+
+    detections = store.get("detection_objects", [])
+    matches = sorted(
+        [d for d in detections if d["label"] == label],
+        key=lambda d: d["box"][0],
+        reverse=True,
+    )
+    if rank < 1 or rank > len(matches):
+        return json.dumps({"error": f"rank {rank} out of range; found {len(matches)} '{label}' object(s)"})
+
+    x1, y1, x2, y2 = [int(v) for v in matches[rank - 1]["box"]]
+    img = PILImage.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
+    buf = io.BytesIO()
+    img.crop((x1, y1, x2, y2)).save(buf, format="JPEG")
+    region_b64 = base64.b64encode(buf.getvalue()).decode()
+    if store is not None:
+        store["last_region_box"] = [x1, y1, x2, y2]
+        store["pending_image_b64"] = region_b64
+    return json.dumps({"success": True, "label": label, "rank": rank})
+
+
+@tool
+def upload_result_image(image_b64: str) -> str:
+    """Upload a processed image (base64 JPEG) to storage so the user can see it.
+    Call this after applying any image transformation to make the result visible."""
+    chat_id = _current_chat_id.get() or str(uuid.uuid4())
+    image_bytes = base64.b64decode(image_b64)
+    key = f"{chat_id}/{uuid.uuid4()}/processed/image.jpg"
+    upload_bytes(image_bytes, key)
+    store = _result_store.get()
+    if store is not None:
+        store["processed_image_key"] = key
+    return json.dumps({"success": True})
+
+
+# Registry: map tool name -> tool function (MCP tools added at startup via lifespan)
 TOOLS = {
     detect_objects.name: detect_objects,
     get_annotated_image.name: get_annotated_image,
+    get_object_region_b64.name: get_object_region_b64,
+    upload_result_image.name: upload_result_image,
 }
 
 # region_name is a Bedrock-only kwarg; other providers reject it, so add it conditionally.
@@ -167,6 +225,23 @@ _max_input_tokens: int = _profile.get("max_input_tokens", 0)
 logger.info("Model profile loaded: model=%s, max_input_tokens=%s", MODEL, _max_input_tokens)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global llm_with_tools
+    try:
+        mcp_client = MultiServerMCPClient(
+            {"img-proc": {"url": MCP_SERVER_URL, "transport": "streamable_http"}}
+        )
+        mcp_tools = await mcp_client.get_tools()
+        for t in mcp_tools:
+            TOOLS[t.name] = t
+        llm_with_tools = llm.bind_tools(list(TOOLS.values()))
+        logger.info("MCP tools loaded: %s", [t.name for t in mcp_tools])
+    except Exception as e:
+        logger.warning("MCP server unavailable, starting without image-processing tools: %s", e)
+    yield
+
+
 def message_content_to_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -184,7 +259,22 @@ def message_content_to_text(content) -> str:
     return str(content)
 
 
-def run_agent(history: list, max_iterations: int = 10) -> dict:
+def _composite_region(original_b64: str, region_b64: str, box: list) -> str:
+    """Paste a processed region back into the original image at the given bounding box."""
+    x1, y1, x2, y2 = box
+    original = PILImage.open(io.BytesIO(base64.b64decode(original_b64))).convert("RGB")
+    region = PILImage.open(io.BytesIO(base64.b64decode(region_b64))).convert("RGB")
+    region = region.resize((x2 - x1, y2 - y1), PILImage.LANCZOS)
+    original.paste(region, (x1, y1))
+    buf = io.BytesIO()
+    original.save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+_IMG_PROC_MCP_TOOLS = {"rotate", "flip", "blur", "resize", "crop", "add_noise"}
+
+
+async def run_agent(history: list, max_iterations: int = 10) -> dict:
     """
     Simple ReAct loop:
       1. Send messages to the LLM.
@@ -198,7 +288,7 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
     output_tokens_total: int = 0
 
     for iteration in range(1, max_iterations + 1):
-        response: AIMessage = llm_with_tools.invoke(messages)
+        response: AIMessage = await llm_with_tools.ainvoke(messages)
 
         usage = response.usage_metadata or {}
         input_tokens_total += usage.get("input_tokens", 0)
@@ -229,7 +319,34 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
         for tool_call in response.tool_calls:
             tools_called.append(tool_call["name"])
             tool_fn = TOOLS[tool_call["name"]]
-            messages.append(tool_fn.invoke(tool_call))
+
+            if tool_call["name"] in _IMG_PROC_MCP_TOOLS:
+                store = _result_store.get() or {}
+                source_b64 = store.pop("pending_image_b64", None) or _current_image_b64.get() or ""
+                tool_call = {**tool_call, "args": {**tool_call["args"], "image_b64": source_b64}}
+
+            tool_msg = await tool_fn.ainvoke(tool_call)
+
+            if tool_call["name"] in _IMG_PROC_MCP_TOOLS:
+                content = tool_msg.content
+                if isinstance(content, list) and content:
+                    first = content[0]
+                    result_b64 = first.get("text", "") if isinstance(first, dict) else str(first)
+                elif isinstance(content, str):
+                    result_b64 = content
+                else:
+                    result_b64 = None
+                if result_b64:
+                    store = _result_store.get() or {}
+                    region_box = store.pop("last_region_box", None)
+                    if region_box:
+                        original_b64 = _current_image_b64.get()
+                        if original_b64:
+                            result_b64 = _composite_region(original_b64, result_b64, region_box)
+                    await upload_result_image.ainvoke({"image_b64": result_b64})
+                tool_msg.content = json.dumps({"success": True})
+
+            messages.append(tool_msg)
 
     return {
         "response": "",
@@ -244,10 +361,11 @@ def run_agent(history: list, max_iterations: int = 10) -> dict:
     }
 
 
-app = FastAPI(title="Vision Agent")
+app = FastAPI(title="Vision Agent", lifespan=lifespan)
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
+
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
@@ -255,6 +373,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         status_code=429,
         content={"detail": "You're sending requests too quickly. Please wait a moment and try again."},
     )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -286,10 +405,9 @@ class ChatResponse(BaseModel):
     tokens_used: dict  # {"input": N, "output": N, "total": N}
 
 
-
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit("10/minute")
-def chat(request: Request, request_body: ChatRequest):
+async def chat(request: Request, request_body: ChatRequest):
     lc_messages = []
     latest_image = None
 
@@ -312,10 +430,12 @@ def chat(request: Request, request_body: ChatRequest):
     store_token = _result_store.set(result_store)
     try:
         start = time.time()
-        agent_result = run_agent(lc_messages)
+        agent_result = await run_agent(lc_messages)
         elapsed = round(time.time() - start, 2)
+        processed_key = result_store.get("processed_image_key")
         annotated_key = result_store.get("annotated_image_key")
-        annotated_url = generate_presigned_url(annotated_key) if annotated_key else None
+        display_key = processed_key or annotated_key
+        annotated_url = generate_presigned_url(display_key) if display_key else None
         return ChatResponse(
             response=agent_result["response"],
             prediction_id=result_store.get("prediction_uid"),
